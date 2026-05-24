@@ -147,13 +147,15 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
                 <p className="dps-value">{fmt(computed.instalment)}</p>
               </div>
               <div className="dps-cell">
-                <p className="dps-label">Months</p>
-                <p className="dps-value">{draft.months}</p>
-              </div>
-              <div className="dps-cell">
                 <p className="dps-label">Instals Rcvd</p>
-                <p className="dps-value">{draft.instalRcvd} / {draft.months}</p>
+                <p className="dps-value">{draft.instalRcvd}</p>
               </div>
+              {draft.dealDate && (
+                <div className="dps-cell">
+                  <p className="dps-label">Date</p>
+                  <p className="dps-value">{new Date(draft.dealDate).toLocaleDateString()}</p>
+                </div>
+              )}
             </div>
 
             {/* Collapsible further details */}
@@ -168,7 +170,6 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
                   ["Remaining", fmt(computed.remaining), true],
                   ...(draft.mobileNo ? [["Mobile", draft.mobileNo]] : []),
                   ...(draft.referral ? [["Referral", draft.referral]] : []),
-                  ...(draft.dealDate ? [["Date", new Date(draft.dealDate).toLocaleDateString()]] : [])
                 ].map(([label, value, accent]) => (
                   <Row key={label as string} label={label as string} value={value as string} accent={Boolean(accent)} />
                 ))}

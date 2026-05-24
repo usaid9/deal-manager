@@ -7,7 +7,7 @@ import {
   createNextMonth, deleteDealEverywhere, getActiveMonthId, getBaseDeals,
   getFormulas, getMonthRecords, getMonths, propagateSnapshotForward,
   saveBaseDeals, saveBaseDeal, saveMonthRecord, saveMonthRecords,
-  setActiveMonthId, setFormulas, deleteMonth
+  setActiveMonthId, setFormulas
 } from "./lib/api";
 import { loadDealsFromExcel } from "./lib/excel";
 import { DEFAULT_FORMULAS } from "./lib/formulas";
@@ -69,10 +69,7 @@ export default function App() {
   const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft>(emptyReceipt(null));
   const [formWarning, setFormWarning] = useState<string | null>(null);
 
-  const [addMonthOpen, setAddMonthOpen] = useState(false);
-  const [addMonthInput, setAddMonthInput] = useState("");
-  const [addMonthError, setAddMonthError] = useState<string | null>(null);
-
+ 
   const { detailDealId, detailMonthId } = useMemo(() => {
     if (typeof window === "undefined") return { detailDealId: null, detailMonthId: null };
     const p = new URLSearchParams(window.location.search);
@@ -344,46 +341,10 @@ export default function App() {
     setMonthRecords(records);
   };
 
-  const openAddMonth = () => {
-    const sorted = [...months].sort((a, b) => b.id.localeCompare(a.id));
-    let defaultVal: string;
-    if (sorted.length > 0) {
-      const [y, m] = sorted[0].id.split("-").map(Number);
-      const next = new Date(y, m);
-      defaultVal = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
-    } else {
-      const now = new Date();
-      defaultVal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    }
-    setAddMonthInput(defaultVal); setAddMonthError(null); setAddMonthOpen(true);
-  };
+  
 
-  const handleAddMonthSubmit = async () => {
-    const trimmed = addMonthInput.trim();
-    if (!/^\d{4}-\d{2}$/.test(trimmed)) { setAddMonthError("Use YYYY-MM format."); return; }
-    if (months.find((m) => m.id === trimmed)) { setAddMonthOpen(false); await handleSelectMonth(trimmed); return; }
-    const [y, mo] = trimmed.split("-").map(Number);
-    const label = new Date(y, mo - 1).toLocaleString("en-US", { month: "short", year: "numeric" });
-    await createNextMonth(activeMonthId ?? "", trimmed, label);
-    const newMonths = await getMonths();
-    cache.months = newMonths;
-    setMonths(newMonths); setAddMonthOpen(false);
-    await handleSelectMonth(trimmed);
-  };
 
-  const handleDeleteMonth = async (monthId: string) => {
-    if (months.length <= 1) { alert("Cannot delete the only month."); return; }
-    const month = months.find((m) => m.id === monthId);
-    if (!window.confirm(`Delete "${month?.label ?? monthId}" and all its receipts?`)) return;
-    await deleteMonth(monthId);
-    const monthList = await getMonths();
-    cache.months = monthList; cache.invalidateRecords(monthId);
-    setMonths(monthList);
-    if (activeMonthId === monthId) {
-      const next = [...monthList].sort((a, b) => b.id.localeCompare(a.id))[0];
-      if (next) await handleSelectMonth(next.id);
-    }
-  };
+
 
   if (loading) return <div className="loading"><div className="spinner" /><p>Loading deals database...</p></div>;
   if (error) return <div className="loading"><h2>Something went wrong</h2><p>{error}</p></div>;
@@ -408,10 +369,7 @@ export default function App() {
                       <option key={m.id} value={m.id}>{m.label}</option>
                     ))}
                   </select>
-                  <div className="month-dashboard__btns">
-                    <button className="btn btn--ghost btn--sm" onClick={openAddMonth}>+ Month</button>
-                    <button className="btn btn--ghost btn--sm icon-btn" title="Delete month" onClick={() => activeMonthId && void handleDeleteMonth(activeMonthId)}>🗑</button>
-                  </div>
+                  
                 </div>
               </div>
               <div className="month-dashboard__stats">
@@ -497,22 +455,7 @@ export default function App() {
         onDelete={handleDeleteDeal}
       />
 
-      <Modal open={addMonthOpen} title="Add month" onClose={() => setAddMonthOpen(false)}>
-        <div className="modal__form">
-          <label>Month (YYYY-MM)
-            <input type="month" value={addMonthInput}
-              onChange={(e) => { setAddMonthInput(e.target.value); setAddMonthError(null); }}
-              onKeyDown={(e) => { if (e.key === "Enter") void handleAddMonthSubmit(); }}
-              autoFocus />
-          </label>
-          {addMonthError && <p className="modal__error">{addMonthError}</p>}
-          <p className="modal__hint">Add any past or future month.</p>
-          <div className="modal__actions">
-            <button className="btn btn--ghost" onClick={() => setAddMonthOpen(false)}>Cancel</button>
-            <button className="btn btn--primary" onClick={() => void handleAddMonthSubmit()}>Add</button>
-          </div>
-        </div>
-      </Modal>
+      
 
       <Modal open={receiptOpen} title="Add receipt" onClose={() => setReceiptOpen(false)}>
         <div className="modal__form">
