@@ -4,60 +4,48 @@ import DealDrawer from "./components/DealDrawer";
 import Modal from "./components/Modal";
 import { recalculateDeals, calcInstalment } from "./lib/compute";
 import {
-  createNextMonth,
-  deleteDealEverywhere,
-  getActiveMonthId,
-  getBaseDeals,
-  getFormulas,
-  getMonthRecords,
-  getMonths,
-  propagateSnapshotForward,
-  saveBaseDeals,
-  saveBaseDeal,
-  saveMonthRecord,
-  saveMonthRecords,
-  setActiveMonthId,
-  setFormulas,
-  deleteMonth
+  createNextMonth, deleteDealEverywhere, getActiveMonthId, getBaseDeals,
+  getFormulas, getMonthRecords, getMonths, propagateSnapshotForward,
+  saveBaseDeals, saveBaseDeal, saveMonthRecord, saveMonthRecords,
+  setActiveMonthId, setFormulas, deleteMonth
 } from "./lib/api";
 import { loadDealsFromExcel } from "./lib/excel";
 import { DEFAULT_FORMULAS } from "./lib/formulas";
-import type {
-  BaseDeal,
-  Deal,
-  FormulaTemplates,
-  MonthMeta,
-  MonthRecord
-} from "./lib/types";
+import type { BaseDeal, Deal, FormulaTemplates, MonthMeta, MonthRecord } from "./lib/types";
 
-const currency = new Intl.NumberFormat("en-PK", {
-  style: "currency",
-  currency: "PKR",
-  maximumFractionDigits: 0
-});
+const currency = new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR", maximumFractionDigits: 0 });
 
-type ReceiptDraft = {
-  amount: number;
-  receivedAt: string;
-  note: string;
-  installments: number;
+// ── In-memory cache (survives back-navigation within the same tab) ──────────
+const _cache: {
+  baseDeals?: BaseDeal[];
+  months?: MonthMeta[];
+  activeMonthId?: string;
+  monthRecords: Record<string, MonthRecord[]>;
+} = { monthRecords: {} };
+
+const cache = {
+  get baseDeals() { return _cache.baseDeals; },
+  set baseDeals(v) { _cache.baseDeals = v; },
+  get months() { return _cache.months; },
+  set months(v) { _cache.months = v; },
+  get activeMonthId() { return _cache.activeMonthId; },
+  set activeMonthId(v) { _cache.activeMonthId = v; },
+  getRecords(monthId: string) { return _cache.monthRecords[monthId]; },
+  setRecords(monthId: string, v: MonthRecord[]) { _cache.monthRecords[monthId] = v; },
+  invalidateRecords(monthId: string) { delete _cache.monthRecords[monthId]; },
 };
 
-const emptyReceipt = (): ReceiptDraft => ({
-  amount: 0,
-  receivedAt: new Date().toISOString().slice(0, 10),
-  note: "",
-  installments: 1
+const monthIdForDate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+const monthLabelForDate = (d: Date) =>
+  d.toLocaleString("en-US", { month: "short", year: "numeric" });
+
+type ReceiptDraft = { amount: number; receivedAt: string; note: string; installments: number; targetMonthId: string };
+const emptyReceipt = (monthId: string | null): ReceiptDraft => ({
+  amount: 0, receivedAt: new Date().toISOString().slice(0, 10), note: "", installments: 1,
+  targetMonthId: monthId ?? ""
 });
-
-const monthIdForDate = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
-};
-
-const monthLabelForDate = (date: Date) =>
-  date.toLocaleString("en-US", { month: "short", year: "numeric" });
 
 export default function App() {
   const [baseDeals, setBaseDeals] = useState<BaseDeal[]>([]);
@@ -69,13 +57,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "closed">(
-    "all"
-  );
   const [referralFilter, setReferralFilter] = useState("all");
-  const [receiptFilter, setReceiptFilter] = useState<
-    "all" | "received" | "not-received"
-  >("all");
+  const [receiptFilter, setReceiptFilter] = useState<"all" | "received" | "pending">("all");
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<"view" | "new">("view");
@@ -83,243 +66,165 @@ export default function App() {
 
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [receiptDealId, setReceiptDealId] = useState<string | null>(null);
-  const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft>(emptyReceipt());
-
+  const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft>(emptyReceipt(null));
   const [formWarning, setFormWarning] = useState<string | null>(null);
 
+  const [addMonthOpen, setAddMonthOpen] = useState(false);
+  const [addMonthInput, setAddMonthInput] = useState("");
+  const [addMonthError, setAddMonthError] = useState<string | null>(null);
+
   const { detailDealId, detailMonthId } = useMemo(() => {
-    if (typeof window === "undefined") {
-      return { detailDealId: null, detailMonthId: null } as const;
-    }
-    const params = new URLSearchParams(window.location.search);
-    return {
-      detailDealId: params.get("dealId"),
-      detailMonthId: params.get("monthId")
-    } as const;
+    if (typeof window === "undefined") return { detailDealId: null, detailMonthId: null };
+    const p = new URLSearchParams(window.location.search);
+    return { detailDealId: p.get("dealId"), detailMonthId: p.get("monthId") };
   }, []);
 
   const detailMode = Boolean(detailDealId);
 
   useEffect(() => {
     let cancelled = false;
-
     const init = async () => {
       try {
-        const storedFormulas = await getFormulas();
-        if (storedFormulas) {
-          setFormulaState({ ...DEFAULT_FORMULAS, ...storedFormulas });
+        // If cache is warm (back-navigation), use it immediately — no DB round-trips
+        if (cache.baseDeals && cache.months && cache.activeMonthId) {
+          const monthId = detailMonthId || cache.activeMonthId;
+          const cachedRecords = cache.getRecords(monthId);
+          if (!cancelled) {
+            setBaseDeals(cache.baseDeals);
+            setMonths(cache.months);
+            setActiveMonthState(monthId);
+            setMonthRecords(cachedRecords ?? []);
+            setLoading(false);
+            // If records weren't cached yet for this month, fetch them quietly
+            if (!cachedRecords) {
+              const records = await getMonthRecords(monthId);
+              cache.setRecords(monthId, records);
+              if (!cancelled) setMonthRecords(records);
+            }
+          }
+          return;
         }
 
-        let monthId = detailMonthId || (await getActiveMonthId()) || null;
+        const storedFormulas = await getFormulas();
+        if (storedFormulas) setFormulaState({ ...DEFAULT_FORMULAS, ...storedFormulas });
         let monthList = await getMonths();
+        let monthId = detailMonthId || (await getActiveMonthId()) || null;
         if (!monthId) {
           const now = new Date();
           monthId = monthIdForDate(now);
-          if (!monthList.find((month) => month.id === monthId)) {
+          if (!monthList.find((m) => m.id === monthId)) {
             await createNextMonth("", monthId, monthLabelForDate(now));
             monthList = await getMonths();
           }
           await setActiveMonthId(monthId);
         }
-
         const storedBaseDeals = await getBaseDeals();
         if (storedBaseDeals.length === 0 && monthId) {
-          if (!monthList.find((month) => month.id === monthId)) {
+          if (!monthList.find((m) => m.id === monthId)) {
             await createNextMonth("", monthId, monthLabelForDate(new Date()));
             monthList = await getMonths();
           }
-
-          const {
-            baseDeals: seededBase,
-            monthRecords: seededRecords,
-            formulas: seededFormulas
-          } = await loadDealsFromExcel("/Deals Manager.xlsx", monthId);
-          await saveBaseDeals(seededBase);
-          await saveMonthRecords(seededRecords);
-          await setFormulas(seededFormulas);
+          const { baseDeals: b, monthRecords: mr, formulas: f } =
+            await loadDealsFromExcel("/Deals Manager.xlsx", monthId);
+          await Promise.all([saveBaseDeals(b), saveMonthRecords(mr), setFormulas(f)]);
           if (!cancelled) {
-            setFormulaState({ ...DEFAULT_FORMULAS, ...seededFormulas });
-            setBaseDeals(seededBase);
-            setMonthRecords(seededRecords);
+            setFormulaState({ ...DEFAULT_FORMULAS, ...f });
+            setBaseDeals(b); setMonthRecords(mr);
+            cache.baseDeals = b; cache.setRecords(monthId, mr);
           }
         } else if (monthId) {
           const records = await getMonthRecords(monthId);
-          if (!cancelled) {
-            setBaseDeals(storedBaseDeals);
-            setMonthRecords(records);
-          }
+          cache.baseDeals = storedBaseDeals; cache.setRecords(monthId, records);
+          if (!cancelled) { setBaseDeals(storedBaseDeals); setMonthRecords(records); }
         }
-
-        if (!cancelled) {
-          setMonths(monthList);
-          setActiveMonthState(monthId);
-        }
+        cache.months = monthList; cache.activeMonthId = monthId ?? undefined;
+        if (!cancelled) { setMonths(monthList); setActiveMonthState(monthId); }
       } catch (err) {
-        if (!cancelled) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Unable to load the local database."
-          );
-        }
+        if (!cancelled) setError(err instanceof Error ? err.message : "Unable to load.");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     };
-
     init();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [detailMonthId]);
 
   useEffect(() => {
-    if (!activeMonthId) {
-      return;
-    }
-
-    const refreshFromDb = async () => {
+    if (!activeMonthId) return;
+    const refresh = async () => {
       try {
-        const [storedBaseDeals, records, monthList] = await Promise.all([
-          getBaseDeals(),
-          getMonthRecords(activeMonthId),
-          getMonths()
-        ]);
-        setBaseDeals(storedBaseDeals);
-        setMonthRecords(records);
-        setMonths(monthList);
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unable to refresh the local database."
-        );
-      }
+        const [b, records, monthList] = await Promise.all([getBaseDeals(), getMonthRecords(activeMonthId), getMonths()]);
+        cache.baseDeals = b; cache.setRecords(activeMonthId, records); cache.months = monthList;
+        setBaseDeals(b); setMonthRecords(records); setMonths(monthList);
+      } catch { /* ignore */ }
     };
-
-    const handleFocus = () => {
-      void refreshFromDb();
-    };
-
-    window.addEventListener("focus", handleFocus);
-    return () => {
-      window.removeEventListener("focus", handleFocus);
-    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, [activeMonthId]);
 
-  const persistBaseDeals = async (
-    nextBaseDeals: BaseDeal[],
-    nextMonthRecords: MonthRecord[]
-  ) => {
-    const recordMap = new Map(
-      nextMonthRecords.map((record) => [record.dealId, record])
-    );
-    const nextDeals = nextBaseDeals.map((deal) => {
-      const record = recordMap.get(deal.id);
-      return {
-        ...deal,
-        received: record?.received ?? 0,
-        receipts: record?.receipts ?? [],
-        snapshotRecovered: record?.snapshotRecovered ?? null,
-        snapshotRemaining: record?.snapshotRemaining ?? null
-      };
+  useEffect(() => {
+    if (!detailMode || !detailDealId) return;
+    setDrawerDealId(detailDealId); setDrawerMode("view"); setDrawerOpen(true);
+  }, [detailDealId, detailMode]);
+
+  const mergeDeals = (bd: BaseDeal[], mr: MonthRecord[]) => {
+    const map = new Map(mr.map((r) => [r.dealId, r]));
+    return bd.map((d) => {
+      const r = map.get(d.id);
+      return { ...d, received: r?.received ?? 0, receipts: r?.receipts ?? [], snapshotRecovered: r?.snapshotRecovered ?? null, snapshotRemaining: r?.snapshotRemaining ?? null };
     });
-    const recalculated = recalculateDeals(nextDeals, formulas);
-    const sanitized = recalculated.map(({ received, receipts, snapshotRecovered, snapshotRemaining, ...deal }) => deal);
-    setBaseDeals(sanitized);
-    await saveBaseDeals(sanitized);
   };
 
-  const deals = useMemo(() => {
-    const recordMap = new Map(
-      monthRecords.map((record) => [record.dealId, record])
-    );
-    const mergedDeals = baseDeals.map((deal) => {
-      const record = recordMap.get(deal.id);
-      return {
-        ...deal,
-        received: record?.received ?? 0,
-        receipts: record?.receipts ?? [],
-        snapshotRecovered: record?.snapshotRecovered ?? null,
-        snapshotRemaining: record?.snapshotRemaining ?? null
-      };
-    });
-    return recalculateDeals(mergedDeals, formulas);
-  }, [baseDeals, monthRecords, formulas]);
+  const deals = useMemo(() => recalculateDeals(mergeDeals(baseDeals, monthRecords)), [baseDeals, monthRecords]);
 
   const referralOptions = useMemo(() => {
-    const values = new Set(
-      deals.map((deal) => deal.referral).filter((value) => value)
-    );
-    return ["all", ...Array.from(values)];
+    const vals = new Set(deals.map((d) => d.referral).filter(Boolean));
+    return ["all", ...Array.from(vals)];
   }, [deals]);
+
+  const sortedMonths = useMemo(() => [...months].sort((a, b) => b.id.localeCompare(a.id)), [months]);
+  const activeMonthLabel = useMemo(() => months.find((m) => m.id === activeMonthId)?.label ?? "", [activeMonthId, months]);
+
+  const visibleDeals = useMemo(() => {
+    if (!activeMonthId) return deals;
+    return deals.filter((d) => {
+      if (d.remainingAmount <= 0) {
+        return d.receipts.some((r) => r.receivedAt?.slice(0, 7) === activeMonthId);
+      }
+      return true;
+    });
+  }, [deals, activeMonthId]);
 
   const filteredDeals = useMemo(() => {
-    const lowered = query.trim().toLowerCase();
-    return deals
-      .filter((deal) => {
-        if (statusFilter === "active" && deal.remainingAmount <= 0) {
-          return false;
-        }
-        if (statusFilter === "closed" && deal.remainingAmount > 0) {
-          return false;
-        }
-        const receivedThisMonth =
-          deal.received > 0 || deal.receipts.length > 0;
-        if (receiptFilter === "received" && !receivedThisMonth) {
-          return false;
-        }
-        if (receiptFilter === "not-received" && receivedThisMonth) {
-          return false;
-        }
-        if (referralFilter !== "all" && deal.referral !== referralFilter) {
-          return false;
-        }
-        if (!lowered) {
-          return true;
-        }
-        const haystack = [
-          deal.customer,
-          deal.dealNo,
-          deal.mobileNo,
-          deal.referral
-        ]
-          .map((value) => String(value).toLowerCase())
-          .join(" ");
-        return haystack.includes(lowered);
+    const low = query.trim().toLowerCase();
+    return visibleDeals
+      .filter((d) => {
+        const rcvd = d.received > 0 || d.receipts.length > 0;
+        if (receiptFilter === "received" && !rcvd) return false;
+        if (receiptFilter === "pending" && rcvd) return false;
+        if (referralFilter !== "all" && d.referral !== referralFilter) return false;
+        if (!low) return true;
+        return [d.customer, d.dealNo, d.mobileNo, d.referral].map((v) => String(v).toLowerCase()).join(" ").includes(low);
       })
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }, [deals, query, receiptFilter, referralFilter, statusFilter]);
+  }, [visibleDeals, query, receiptFilter, referralFilter]);
 
-  const totals = useMemo(() => {
-    const invested = deals.reduce((sum, deal) => sum + deal.invested, 0);
-    const recovered = deals.reduce(
-      (sum, deal) => sum + deal.recoveredAmount,
-      0
-    );
-    const remaining = deals.reduce(
-      (sum, deal) => sum + Math.max(0, deal.remainingAmount),
-      0
-    );
-    const active = deals.filter((deal) => deal.remainingAmount > 0).length;
-    return { invested, recovered, remaining, active };
-  }, [deals]);
+  const monthlyStats = useMemo(() => {
+    // All deals relevant this month: active ones + completed ones that finished this month
+    const allThisMonth = visibleDeals; // visibleDeals already includes completed-this-month deals
+    const activeDeals = allThisMonth.filter((d) => d.remainingAmount > 0);
+    const expectedThisMonth = activeDeals.reduce((s, d) => {
+      const inst = d.instalment > 0 ? d.instalment : calcInstalment(d.invested, d.months);
+      return s + inst;
+    }, 0);
+    const receivedThisMonth = monthRecords.reduce((s, r) => s + (r.received ?? 0), 0);
+    // Count receipts across ALL deals this month (including completed)
+    const rcvdCount = allThisMonth.filter((d) => d.received > 0 || d.receipts.length > 0).length;
+    const pendingCount = activeDeals.filter((d) => !(d.received > 0 || d.receipts.length > 0)).length;
+    return { expectedThisMonth, receivedThisMonth, activeCount: activeDeals.length, rcvdCount, pendingCount };
+  }, [visibleDeals, monthRecords]);
 
-  const selectedDeal = useMemo(() => {
-    if (!drawerDealId) {
-      return null;
-    }
-    return deals.find((deal) => deal.id === drawerDealId) || null;
-  }, [deals, drawerDealId]);
-
-  const activeMonthLabel = useMemo(() => {
-    if (!activeMonthId) {
-      return "";
-    }
-    return months.find((month) => month.id === activeMonthId)?.label ?? "";
-  }, [activeMonthId, months]);
+  const selectedDeal = useMemo(() => drawerDealId ? deals.find((d) => d.id === drawerDealId) ?? null : null, [deals, drawerDealId]);
 
   const openDealWindow = (id: string) => {
     if (!activeMonthId || typeof window === "undefined") return;
@@ -330,253 +235,150 @@ export default function App() {
     window.location.href = url.toString();
   };
 
-  const openDrawerForNew = () => {
-    setDrawerDealId(null);
-    setDrawerMode("new");
-    setDrawerOpen(true);
-    setFormWarning(null);
-  };
-
   const handleSaveDeal = async (deal: Deal) => {
-    if (!activeMonthId) {
-      setFormWarning("Select a month before saving.");
-      return;
-    }
-    if (!deal.customer || !deal.dealNo) {
-      setFormWarning("Deal number and customer are required.");
-      return;
-    }
-
-    const normalizedDate = deal.dealDate
-      ? new Date(deal.dealDate).toISOString()
-      : "";
-    const useManualBalance = deal.useManualBalance === true;
+    if (!activeMonthId) { setFormWarning("Select a month before saving."); return; }
+    if (!deal.customer || !deal.dealNo) { setFormWarning("Deal number and customer are required."); return; }
     const now = new Date().toISOString();
     const { received, receipts, ...baseFields } = deal;
-    const nextBaseDeal: BaseDeal = {
-      ...baseFields,
-      dealDate: normalizedDate,
+    const useManualBalance = deal.useManualBalance === true;
+    const nextBase: BaseDeal = {
+      ...baseFields, dealDate: deal.dealDate ? new Date(deal.dealDate).toISOString() : "",
       useManualBalance,
-      manualRecovered: useManualBalance
-        ? deal.manualRecovered ?? deal.recoveredAmount
-        : null,
-      manualRemaining: useManualBalance
-        ? deal.manualRemaining ?? deal.remainingAmount
-        : null,
-      createdAt: deal.createdAt || now,
-      updatedAt: now
+      manualRecovered: useManualBalance ? (deal.manualRecovered ?? deal.recoveredAmount) : null,
+      manualRemaining: useManualBalance ? (deal.manualRemaining ?? deal.remainingAmount) : null,
+      createdAt: deal.createdAt || now, updatedAt: now
     };
-
-    const dealNoKey = String(nextBaseDeal.dealNo);
-    const duplicate = baseDeals.find(
-      (item) => item.id !== nextBaseDeal.id && String(item.dealNo) === dealNoKey
-    );
-
-    if (duplicate) {
-      setFormWarning("Deal number already exists.");
-      return;
+    if (baseDeals.some((d) => d.id !== nextBase.id && String(d.dealNo) === String(nextBase.dealNo))) {
+      setFormWarning("Deal number already exists."); return;
     }
-
-    const nextBaseDeals =
-      drawerMode === "new"
-        ? [nextBaseDeal, ...baseDeals]
-        : baseDeals.map((item) =>
-            item.id === nextBaseDeal.id ? nextBaseDeal : item
-          );
-
-    const existingRecord = monthRecords.find(
-      (record) => record.dealId === nextBaseDeal.id
-    );
+    const nextBaseDeals = drawerMode === "new" ? [nextBase, ...baseDeals] : baseDeals.map((d) => d.id === nextBase.id ? nextBase : d);
+    const existing = monthRecords.find((r) => r.dealId === nextBase.id);
     const nextRecord: MonthRecord = {
-      id: existingRecord?.id ?? `${activeMonthId}:${nextBaseDeal.id}`,
-      monthId: activeMonthId,
-      dealId: nextBaseDeal.id,
+      id: existing?.id ?? `${activeMonthId}:${nextBase.id}`,
+      monthId: activeMonthId, dealId: nextBase.id,
       received: Number.isFinite(received) ? received : 0,
       receipts: Array.isArray(receipts) ? receipts : [],
-      snapshotRecovered: existingRecord?.snapshotRecovered ?? null,
-      snapshotRemaining: existingRecord?.snapshotRemaining ?? null,
-      createdAt: existingRecord?.createdAt ?? now,
-      updatedAt: now
+      snapshotRecovered: existing?.snapshotRecovered ?? null,
+      snapshotRemaining: existing?.snapshotRemaining ?? null,
+      createdAt: existing?.createdAt ?? now, updatedAt: now
     };
-    const nextMonthRecords = existingRecord
-      ? monthRecords.map((record) =>
-          record.dealId === nextBaseDeal.id ? nextRecord : record
-        )
-      : [nextRecord, ...monthRecords];
-
+    const nextMonthRecords = existing ? monthRecords.map((r) => r.dealId === nextBase.id ? nextRecord : r) : [nextRecord, ...monthRecords];
     setMonthRecords(nextMonthRecords);
     await saveMonthRecord(nextRecord);
-    await persistBaseDeals(nextBaseDeals, nextMonthRecords);
-    setDrawerOpen(false);
-    setFormWarning(null);
-  };
-
-  const handleOpenReceipt = (id: string) => {
-    setReceiptDealId(id);
-    setReceiptDraft(emptyReceipt());
-    setReceiptOpen(true);
+    const recalculated = recalculateDeals(mergeDeals(nextBaseDeals, nextMonthRecords));
+    const sanitized = recalculated.map(({ received: _r, receipts: _rc, snapshotRecovered: _src, snapshotRemaining: _srm, ...d }) => d);
+    setBaseDeals(sanitized);
+    cache.baseDeals = sanitized;
+    cache.setRecords(activeMonthId, nextMonthRecords);
+    await saveBaseDeals(sanitized);
+    setDrawerOpen(false); setFormWarning(null);
   };
 
   const handleSaveReceipt = async () => {
-    if (!activeMonthId || !receiptDealId) return;
-    const targetBase = baseDeals.find((deal) => deal.id === receiptDealId);
+    if (!receiptDealId) return;
+    const targetMonthId = receiptDraft.targetMonthId || activeMonthId;
+    if (!targetMonthId || !/^\d{4}-\d{2}$/.test(targetMonthId)) { setFormWarning("Invalid month."); return; }
+    const targetBase = baseDeals.find((d) => d.id === receiptDealId);
     if (!targetBase) return;
-
-    const existingRecord = monthRecords.find((r) => r.dealId === receiptDealId);
+    const targetMonthRecords = targetMonthId === activeMonthId ? monthRecords : await getMonthRecords(targetMonthId);
+    const existing = targetMonthRecords.find((r) => r.dealId === receiptDealId);
+    if (existing && existing.receipts && existing.receipts.length > 0) {
+      setFormWarning(`A receipt already exists for this deal in ${targetMonthId}.`); return;
+    }
+    let currentMonths = months;
+    if (!currentMonths.find((m) => m.id === targetMonthId)) {
+      const [y, mo] = targetMonthId.split("-").map(Number);
+      const label = new Date(y, mo - 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+      await createNextMonth(activeMonthId ?? "", targetMonthId, label);
+      currentMonths = await getMonths(); setMonths(currentMonths);
+    }
     const now = new Date().toISOString();
-
-    const newReceipt = {
-      id: crypto.randomUUID(),
-      dealId: receiptDealId,
-      amount: receiptDraft.amount,
-      receivedAt: new Date(receiptDraft.receivedAt).toISOString(),
-      note: receiptDraft.note,
-      installments: receiptDraft.installments
-    };
-
+    const newReceipt = { id: crypto.randomUUID(), dealId: receiptDealId, amount: receiptDraft.amount, receivedAt: new Date(receiptDraft.receivedAt).toISOString(), note: receiptDraft.note, installments: receiptDraft.installments };
     const nextRecord: MonthRecord = {
-      id: existingRecord?.id ?? `${activeMonthId}:${receiptDealId}`,
-      monthId: activeMonthId,
-      dealId: receiptDealId,
-      received: (existingRecord?.received ?? 0) + receiptDraft.amount,
-      receipts: [...(existingRecord?.receipts ?? []), newReceipt],
-      snapshotRecovered: existingRecord?.snapshotRecovered ?? null,
-      snapshotRemaining: existingRecord?.snapshotRemaining ?? null,
-      createdAt: existingRecord?.createdAt ?? now,
-      updatedAt: now
+      id: existing?.id ?? `${targetMonthId}:${receiptDealId}`,
+      monthId: targetMonthId, dealId: receiptDealId,
+      received: (existing?.received ?? 0) + receiptDraft.amount,
+      receipts: [...(existing?.receipts ?? []), newReceipt],
+      snapshotRecovered: existing?.snapshotRecovered ?? null, snapshotRemaining: existing?.snapshotRemaining ?? null,
+      createdAt: existing?.createdAt ?? now, updatedAt: now
     };
-
-    const nextMonthRecords = existingRecord
-      ? monthRecords.map((r) => (r.dealId === receiptDealId ? nextRecord : r))
-      : [nextRecord, ...monthRecords];
-
-    // ── Balance calculation ──────────────────────────────────────
-    // Opening balance for this month = snapshot (carried from previous month)
-    // If no snapshot yet (first month), use the deal's total as opening remaining
-    const effectiveInstalment = targetBase.instalment > 0
-      ? targetBase.instalment
-      : calcInstalment(targetBase.invested, targetBase.months);
-    const dealTotal = targetBase.total > 0
-      ? targetBase.total
-      : effectiveInstalment * targetBase.months;
-
-    const openingRemaining =
-      existingRecord?.snapshotRemaining !== null && existingRecord?.snapshotRemaining !== undefined
-        ? existingRecord.snapshotRemaining
-        : targetBase.remainingAmount > 0
-          ? targetBase.remainingAmount
-          : dealTotal;
-
-    // Total received this month AFTER adding this receipt
-    const totalReceivedThisMonth = (existingRecord?.received ?? 0) + receiptDraft.amount;
-
-    // Remaining = opening balance − total received this month (floor 0)
-    const newRemaining = Math.max(0, openingRemaining - totalReceivedThisMonth);
+    const effectiveInstalment = targetBase.instalment > 0 ? targetBase.instalment : calcInstalment(targetBase.invested, targetBase.months);
+    const dealTotal = targetBase.total > 0 ? targetBase.total : effectiveInstalment * targetBase.months;
+    const openingRemaining = existing?.snapshotRemaining ?? (targetBase.remainingAmount > 0 ? targetBase.remainingAmount : dealTotal);
+    const totalRcvd = (existing?.received ?? 0) + receiptDraft.amount;
+    const newRemaining = Math.max(0, openingRemaining - totalRcvd);
     const newRecovered = Math.max(0, dealTotal - newRemaining);
-
-    // instalRcvd: cumulative count across all months
-    const newInstalRcvd = targetBase.instalRcvd + receiptDraft.installments;
-
-    const updatedBase: typeof targetBase = {
-      ...targetBase,
-      instalRcvd: newInstalRcvd,
-      recoveredAmount: newRecovered,
-      remainingAmount: newRemaining,
-      manualRecovered: targetBase.useManualBalance ? newRecovered : targetBase.manualRecovered,
-      manualRemaining: targetBase.useManualBalance ? newRemaining : targetBase.manualRemaining,
-      updatedAt: now
-    };
-
-    const nextBaseDeals = baseDeals.map((d) => (d.id === receiptDealId ? updatedBase : d));
-
-    // persist month record + base deal
-    setMonthRecords(nextMonthRecords);
+    const updatedBase: BaseDeal = { ...targetBase, instalRcvd: targetBase.instalRcvd + receiptDraft.installments, recoveredAmount: newRecovered, remainingAmount: newRemaining, manualRecovered: targetBase.useManualBalance ? newRecovered : targetBase.manualRecovered, manualRemaining: targetBase.useManualBalance ? newRemaining : targetBase.manualRemaining, updatedAt: now };
+    if (targetMonthId === activeMonthId) {
+      const nextMonthRecords = existing ? monthRecords.map((r) => r.dealId === receiptDealId ? nextRecord : r) : [nextRecord, ...monthRecords];
+      setMonthRecords(nextMonthRecords);
+      cache.setRecords(activeMonthId, nextMonthRecords);
+    } else {
+      cache.invalidateRecords(targetMonthId);
+    }
+    const nextBaseDeals = baseDeals.map((d) => d.id === receiptDealId ? updatedBase : d);
     setBaseDeals(nextBaseDeals);
-    await saveMonthRecord(nextRecord);
-    await saveBaseDeal(updatedBase);
-
-    // propagate closing balance to all later months
-    await propagateSnapshotForward(receiptDealId, activeMonthId, newRecovered, newRemaining);
-
+    cache.baseDeals = nextBaseDeals;
+    await Promise.all([saveMonthRecord(nextRecord), saveBaseDeal(updatedBase), propagateSnapshotForward(receiptDealId, targetMonthId, newRecovered, newRemaining)]);
     setReceiptOpen(false);
   };
 
   const handleDeleteDeal = async (dealId: string) => {
-    const confirmDelete = window.confirm(
-      "Delete this deal from all months? This cannot be undone."
-    );
-    if (!confirmDelete) {
-      return;
-    }
-
+    if (!window.confirm("Delete this deal from all months?")) return;
     await deleteDealEverywhere(dealId);
-    const nextBaseDeals = baseDeals.filter((deal) => deal.id !== dealId);
-    const nextMonthRecords = monthRecords.filter(
-      (record) => record.dealId !== dealId
-    );
-    setBaseDeals(nextBaseDeals);
-    setMonthRecords(nextMonthRecords);
-
-    if (detailMode) {
-      window.history.back();
-    } else {
-      setDrawerOpen(false);
-    }
+    const nextDeals = baseDeals.filter((d) => d.id !== dealId);
+    const nextRecords = monthRecords.filter((r) => r.dealId !== dealId);
+    setBaseDeals(nextDeals); setMonthRecords(nextRecords);
+    cache.baseDeals = nextDeals;
+    if (activeMonthId) cache.setRecords(activeMonthId, nextRecords);
+    detailMode ? window.history.back() : setDrawerOpen(false);
   };
 
   const handleSelectMonth = async (monthId: string) => {
     setActiveMonthState(monthId);
+    cache.activeMonthId = monthId;
     await setActiveMonthId(monthId);
+    const cached = cache.getRecords(monthId);
+    if (cached) { setMonthRecords(cached); return; }
     const records = await getMonthRecords(monthId);
+    cache.setRecords(monthId, records);
     setMonthRecords(records);
   };
 
-  const handleCreateMonth = async () => {
-    // Ask user for the month they want to create
-    const input = window.prompt(
-      "Enter month (YYYY-MM), e.g. 2025-07:",
-      (() => {
-        // default = next month after latest existing
-        const sorted = [...months].sort((a, b) => b.id.localeCompare(a.id));
-        if (sorted.length > 0) {
-          const [y, m] = sorted[0].id.split("-").map(Number);
-          const next = new Date(y, m); // m is already 1-based, Date month is 0-based so this is +1
-          return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
-        }
-        const now = new Date();
-        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-      })()
-    );
-    if (!input) return;
-    const trimmed = input.trim();
-    if (!/^\d{4}-\d{2}$/.test(trimmed)) {
-      alert("Invalid format. Use YYYY-MM (e.g. 2025-07).");
-      return;
+  const openAddMonth = () => {
+    const sorted = [...months].sort((a, b) => b.id.localeCompare(a.id));
+    let defaultVal: string;
+    if (sorted.length > 0) {
+      const [y, m] = sorted[0].id.split("-").map(Number);
+      const next = new Date(y, m);
+      defaultVal = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`;
+    } else {
+      const now = new Date();
+      defaultVal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     }
-    if (months.find((m) => m.id === trimmed)) {
-      alert("That month already exists.");
-      await handleSelectMonth(trimmed);
-      return;
-    }
-    // label from the date
+    setAddMonthInput(defaultVal); setAddMonthError(null); setAddMonthOpen(true);
+  };
+
+  const handleAddMonthSubmit = async () => {
+    const trimmed = addMonthInput.trim();
+    if (!/^\d{4}-\d{2}$/.test(trimmed)) { setAddMonthError("Use YYYY-MM format."); return; }
+    if (months.find((m) => m.id === trimmed)) { setAddMonthOpen(false); await handleSelectMonth(trimmed); return; }
     const [y, mo] = trimmed.split("-").map(Number);
     const label = new Date(y, mo - 1).toLocaleString("en-US", { month: "short", year: "numeric" });
-    // create from active month as source
     await createNextMonth(activeMonthId ?? "", trimmed, label);
-    const monthList = await getMonths();
-    setMonths(monthList);
+    const newMonths = await getMonths();
+    cache.months = newMonths;
+    setMonths(newMonths); setAddMonthOpen(false);
     await handleSelectMonth(trimmed);
   };
 
   const handleDeleteMonth = async (monthId: string) => {
-    if (months.length <= 1) {
-      alert("Cannot delete the only month.");
-      return;
-    }
+    if (months.length <= 1) { alert("Cannot delete the only month."); return; }
     const month = months.find((m) => m.id === monthId);
-    if (!window.confirm(`Delete "${month?.label ?? monthId}" and all its receipts? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete "${month?.label ?? monthId}" and all its receipts?`)) return;
     await deleteMonth(monthId);
     const monthList = await getMonths();
+    cache.months = monthList; cache.invalidateRecords(monthId);
     setMonths(monthList);
     if (activeMonthId === monthId) {
       const next = [...monthList].sort((a, b) => b.id.localeCompare(a.id))[0];
@@ -584,194 +386,89 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    if (!detailMode || !detailDealId) {
-      return;
-    }
-    setDrawerDealId(detailDealId);
-    setDrawerMode("view");
-    setDrawerOpen(true);
-  }, [detailDealId, detailMode]);
-
-  if (loading) {
-    return (
-      <div className="loading">
-        <div className="spinner" />
-        <p>Loading deals database...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="loading">
-        <h2>Something went wrong</h2>
-        <p>{error}</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="loading"><div className="spinner" /><p>Loading deals database...</p></div>;
+  if (error) return <div className="loading"><h2>Something went wrong</h2><p>{error}</p></div>;
 
   const drawerIsOpen = detailMode ? Boolean(selectedDeal) : drawerOpen;
 
   return (
     <div className={`app ${detailMode ? "app--detail" : ""}`}>
-      {!detailMode && (
-        <aside className="sidebar">
-          <div className="sidebar__header">
-            <p className="sidebar__eyebrow">Databases</p>
-            <h2>Months</h2>
-            {activeMonthLabel && (
-              <p className="sidebar__active">Active: {activeMonthLabel}</p>
-            )}
-          </div>
-          <div className="sidebar__months">
-            {[...months]
-              .sort((a, b) => b.id.localeCompare(a.id))
-              .map((month) => (
-                <div
-                  key={month.id}
-                  className={`sidebar__month ${
-                    month.id === activeMonthId ? "sidebar__month--active" : ""
-                  }`}
-                >
-                  <button
-                    className="sidebar__month-label"
-                    onClick={() => handleSelectMonth(month.id)}
-                  >
-                    <span>{month.label}</span>
-                    <span className="sidebar__month-id">{month.id}</span>
-                  </button>
-                  <button
-                    className="sidebar__month-delete"
-                    title="Delete month"
-                    onClick={(e) => { e.stopPropagation(); void handleDeleteMonth(month.id); }}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-          </div>
-          <button className="btn btn--primary" onClick={handleCreateMonth}>
-            + Add month
-          </button>
-        </aside>
-      )}
-
       <main className="main">
         {!detailMode && (
           <>
-            <header className="hero">
-              <div>
-                <p className="hero__eyebrow">Deal Manager</p>
-                <h1>Track every deal without the spreadsheet.</h1>
-                <p className="hero__subtitle">
-                  Live formulas stay intact, receipts stay attached, and
-                  everything stays on your machine.
-                </p>
+            {/* Monthly dashboard */}
+            <section className="month-dashboard">
+              <div className="month-dashboard__header">
+                <div className="month-dashboard__title-row">
+                  <select
+                    value={activeMonthId ?? ""}
+                    onChange={(e) => void handleSelectMonth(e.target.value)}
+                    className="month-select"
+                  >
+                    {sortedMonths.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
+                  <div className="month-dashboard__btns">
+                    <button className="btn btn--ghost btn--sm" onClick={openAddMonth}>+ Month</button>
+                    <button className="btn btn--ghost btn--sm icon-btn" title="Delete month" onClick={() => activeMonthId && void handleDeleteMonth(activeMonthId)}>🗑</button>
+                  </div>
+                </div>
               </div>
-              <div className="hero__actions">
-                <button className="btn btn--primary" onClick={openDrawerForNew}>
-                  Add new deal
-                </button>
-              </div>
-            </header>
-
-            <section className="stats">
-              <div>
-                <p className="deal-card__label">Total invested</p>
-                <p className="stats__value">{currency.format(totals.invested)}</p>
-              </div>
-              <div>
-                <p className="deal-card__label">Recovered</p>
-                <p className="stats__value">{currency.format(totals.recovered)}</p>
-              </div>
-              <div>
-                <p className="deal-card__label">Remaining</p>
-                <p className="stats__value">{currency.format(totals.remaining)}</p>
-              </div>
-              <div>
-                <p className="deal-card__label">Active deals</p>
-                <p className="stats__value">{totals.active}</p>
+              <div className="month-dashboard__stats">
+                <div className="month-stat">
+                  <p className="month-stat__label">Expected</p>
+                  <p className="month-stat__value">{currency.format(monthlyStats.expectedThisMonth)}</p>
+                  <p className="month-stat__sub">{monthlyStats.activeCount} active deals</p>
+                </div>
+                <div className="month-stat month-stat--rcvd">
+                  <p className="month-stat__label">Received</p>
+                  <p className="month-stat__value">{currency.format(monthlyStats.receivedThisMonth)}</p>
+                  <p className="month-stat__sub">{monthlyStats.rcvdCount} receipts</p>
+                </div>
+                <div className="month-stat month-stat--pending">
+                  <p className="month-stat__label">Pending</p>
+                  <p className="month-stat__value">{currency.format(Math.max(0, monthlyStats.expectedThisMonth - monthlyStats.receivedThisMonth))}</p>
+                  <p className="month-stat__sub">{monthlyStats.pendingCount} unpaid</p>
+                </div>
               </div>
             </section>
 
-            {(() => {
-                const total = deals.filter(d => d.remainingAmount > 0).length;
-                const rcvd = deals.filter(d => d.remainingAmount > 0 && (d.received > 0 || d.receipts.length > 0)).length;
-                const pending = total - rcvd;
-                return (
-                  <div className="checker">
-                    <p className="checker__label">This month — {activeMonthLabel || "current"}</p>
-                    <p className="checker__counts">
-                      <span>{rcvd}</span>/{total} received &nbsp;·&nbsp; <span style={{color: pending > 0 ? '#991b1b' : 'inherit'}}>{pending}</span> pending
-                    </p>
-                  </div>
-                );
-              })()}
-
+            {/* Filters toolbar */}
             <section className="toolbar">
               <div className="search">
-                <input
-                  placeholder="Search by name, deal number, referral, or mobile"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
+                <input placeholder="Search name, deal no, referral…" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
               <div className="toolbar__filters">
-                <select
-                  value={statusFilter}
-                  onChange={(event) =>
-                    setStatusFilter(
-                      event.target.value as "all" | "active" | "closed"
-                    )
-                  }
-                >
-                  <option value="all">All deals</option>
-                  <option value="active">Active</option>
-                  <option value="closed">Closed</option>
-                </select>
-                <select
-                  value={receiptFilter}
-                  onChange={(event) =>
-                    setReceiptFilter(
-                      event.target.value as
-                        | "all"
-                        | "received"
-                        | "not-received"
-                    )
-                  }
-                >
-                  <option value="all">All receipt status</option>
-                  <option value="received">Received this month</option>
-                  <option value="not-received">Not received</option>
-                </select>
-                <select
-                  value={referralFilter}
-                  onChange={(event) => setReferralFilter(event.target.value)}
-                >
-                  {referralOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {option === "all" ? "All referrals" : option}
-                    </option>
-                  ))}
-                </select>
+                <div className="filter-select-wrap">
+                  <span className="filter-select-icon">👤</span>
+                  <select value={referralFilter} onChange={(e) => setReferralFilter(e.target.value)}>
+                    {referralOptions.map((o) => (
+                      <option key={o} value={o}>{o === "all" ? "All referrals" : o}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="filter-select-wrap">
+                  <span className="filter-select-icon">💳</span>
+                  <select value={receiptFilter} onChange={(e) => setReceiptFilter(e.target.value as typeof receiptFilter)}>
+                    <option value="all">All deals</option>
+                    <option value="received">Received</option>
+                    <option value="pending">Pending</option>
+                  </select>
+                </div>
               </div>
             </section>
 
             {filteredDeals.length === 0 ? (
               <section className="empty">
-                <h2>No deals match the filters.</h2>
-                <p>Try another search or add a new deal.</p>
+                <h2>No deals match.</h2>
+                <p>Try another search or change the filters.</p>
               </section>
             ) : (
               <section className="deal-list">
                 {filteredDeals.map((deal) => (
-                  <DealCard
-                    key={deal.id}
-                    deal={deal}
-                    onSelect={openDealWindow}
-                    onReceive={handleOpenReceipt}
-                  />
+                  <DealCard key={deal.id} deal={deal} onSelect={openDealWindow}
+                    onReceive={(id) => { setReceiptDealId(id); setReceiptDraft(emptyReceipt(activeMonthId)); setReceiptOpen(true); }} />
                 ))}
               </section>
             )}
@@ -779,99 +476,65 @@ export default function App() {
         )}
 
         {detailMode && !selectedDeal && (
-          <section className="empty">
-            <h2>Deal not found.</h2>
-            <p>The deal may have been deleted or moved to another month.</p>
-          </section>
+          <section className="empty"><h2>Deal not found.</h2></section>
         )}
       </main>
 
+      {/* FAB — add new deal */}
+      {!detailMode && (
+        <button
+          className="fab"
+          title="Add new deal"
+          onClick={() => { setDrawerDealId(null); setDrawerMode("new"); setDrawerOpen(true); setFormWarning(null); }}
+        >+</button>
+      )}
+
       <DealDrawer
-        mode={drawerMode}
-        open={drawerIsOpen}
-        variant={detailMode ? "page" : "panel"}
-        deal={drawerMode === "view" ? selectedDeal : null}
-        formulas={formulas}
-        onClose={() => {
-          if (detailMode) {
-            window.history.back();
-            return;
-          }
-          setDrawerOpen(false);
-        }}
+        mode={drawerMode} open={drawerIsOpen} variant={detailMode ? "page" : "panel"}
+        deal={drawerMode === "view" ? selectedDeal : null} formulas={formulas}
+        onClose={() => detailMode ? window.history.back() : setDrawerOpen(false)}
         onSave={handleSaveDeal}
-        onAddReceipt={handleOpenReceipt}
+        onAddReceipt={(id) => { setReceiptDealId(id); setReceiptDraft(emptyReceipt(activeMonthId)); setReceiptOpen(true); }}
         onDelete={handleDeleteDeal}
       />
 
-      <Modal
-        open={receiptOpen}
-        title="Add receipt"
-        onClose={() => setReceiptOpen(false)}
-      >
+      <Modal open={addMonthOpen} title="Add month" onClose={() => setAddMonthOpen(false)}>
         <div className="modal__form">
-          <label>
-            Amount received
-            <input
-              type="number"
-              value={receiptDraft.amount}
-              onChange={(event) =>
-                setReceiptDraft((current) => ({
-                  ...current,
-                  amount: Number(event.target.value)
-                }))
-              }
-            />
+          <label>Month (YYYY-MM)
+            <input type="month" value={addMonthInput}
+              onChange={(e) => { setAddMonthInput(e.target.value); setAddMonthError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter") void handleAddMonthSubmit(); }}
+              autoFocus />
           </label>
-          <label>
-            Received date
-            <input
-              type="date"
-              value={receiptDraft.receivedAt}
-              onChange={(event) =>
-                setReceiptDraft((current) => ({
-                  ...current,
-                  receivedAt: event.target.value
-                }))
-              }
-            />
+          {addMonthError && <p className="modal__error">{addMonthError}</p>}
+          <p className="modal__hint">Add any past or future month.</p>
+          <div className="modal__actions">
+            <button className="btn btn--ghost" onClick={() => setAddMonthOpen(false)}>Cancel</button>
+            <button className="btn btn--primary" onClick={() => void handleAddMonthSubmit()}>Add</button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={receiptOpen} title="Add receipt" onClose={() => setReceiptOpen(false)}>
+        <div className="modal__form">
+          <label>Month
+            <input type="month" value={receiptDraft.targetMonthId}
+              onChange={(e) => setReceiptDraft((c) => ({ ...c, targetMonthId: e.target.value }))} />
           </label>
-          <label>
-            Instalments counted
-            <input
-              type="number"
-              value={receiptDraft.installments}
-              onChange={(event) =>
-                setReceiptDraft((current) => ({
-                  ...current,
-                  installments: Number(event.target.value)
-                }))
-              }
-            />
-          </label>
-          <label>
-            Note
-            <textarea
-              value={receiptDraft.note}
-              onChange={(event) =>
-                setReceiptDraft((current) => ({
-                  ...current,
-                  note: event.target.value
-                }))
-              }
-              placeholder="Optional detail"
-            />
+          <p className="modal__hint">One receipt per deal per month only.</p>
+          {(["amount", "receivedAt", "installments"] as const).map((field) => (
+            <label key={field}>
+              {field === "amount" ? "Amount" : field === "receivedAt" ? "Date received" : "Instalments counted"}
+              <input type={field === "receivedAt" ? "date" : "number"} value={receiptDraft[field]}
+                onChange={(e) => setReceiptDraft((c) => ({ ...c, [field]: field === "receivedAt" ? e.target.value : Number(e.target.value) }))} />
+            </label>
+          ))}
+          <label>Note
+            <textarea value={receiptDraft.note} onChange={(e) => setReceiptDraft((c) => ({ ...c, note: e.target.value }))} placeholder="Optional" />
           </label>
           <div className="modal__actions">
-            <button
-              className="btn btn--ghost"
-              onClick={() => setReceiptOpen(false)}
-            >
-              Cancel
-            </button>
-            <button className="btn btn--primary" onClick={handleSaveReceipt}>
-              Save receipt
-            </button>
+            <button className="btn btn--ghost" onClick={() => setReceiptOpen(false)}>Cancel</button>
+            <button className="btn btn--primary" onClick={() => void handleSaveReceipt()}>Save</button>
           </div>
         </div>
       </Modal>
@@ -879,6 +542,7 @@ export default function App() {
       {formWarning && (
         <div className="toast" role="status">
           {formWarning}
+          <button className="toast__close" onClick={() => setFormWarning(null)}>×</button>
         </div>
       )}
     </div>

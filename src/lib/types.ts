@@ -35,7 +35,6 @@ export type MonthRecord = {
   dealId: string;
   received: number;
   receipts: Receipt[];
-  // snapshot of balance ENTERING this month (carried from prev month)
   snapshotRecovered: number | null;
   snapshotRemaining: number | null;
   createdAt: string;
@@ -61,38 +60,4 @@ export type FormulaTemplates = {
   profitPct: string;
   recoveredAmount: string;
   remainingAmount: string;
-};
-
-export const HEADERS = [
-  "Deal No",
-  "Deal Date",
-  "Invested",
-  "Months",
-  "Total",
-  "Customer",
-  "Mobile No",
-  "Referral",
-  "Instalment",
-  "Received",
-  "Instal Rcvd",
-  "Profit %",
-  "Recovered Amount",
-  "Remaining Amount"
-];
-
-export const COLUMN_INDEX = {
-  dealNo: 0,
-  dealDate: 1,
-  invested: 2,
-  months: 3,
-  total: 4,
-  customer: 5,
-  mobileNo: 6,
-  referral: 7,
-  instalment: 8,
-  received: 9,
-  instalRcvd: 10,
-  profitPct: 11,
-  recoveredAmount: 12,
-  remainingAmount: 13
 };

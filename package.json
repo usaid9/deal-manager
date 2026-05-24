@@ -2,6 +2,8 @@
   "name": "deal-manager",
   "private": true,
   "version": "1.0.0",
+  "description": "Deal Manager",
+  "author": "usaid",
   "type": "module",
   "main": "electron.cjs",
   "scripts": {
@@ -30,7 +32,9 @@
     "appId": "com.dealmanager.app",
     "files": ["dist/**/*", "electron.cjs"],
     "win": {
-      "target": "nsis"
-    }
+      "target": "nsis",
+      "forceCodeSigning": false
+    },
+    "publish": null
   }
 }

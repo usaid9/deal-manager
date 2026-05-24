@@ -1,131 +1,62 @@
-/**
- * api.ts — replaces db.ts (IndexedDB) with MongoDB REST API calls.
- * All exported function signatures are identical to the old db.ts so
- * App.tsx needs ZERO changes except the import path.
- */
-
 import type { BaseDeal, FormulaTemplates, MonthMeta, MonthRecord } from "./types";
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api";
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
-  return res.json() as Promise<T>;
-}
-
-async function put(path: string, body: unknown): Promise<void> {
+const req = async <T = void>(method: string, path: string, body?: unknown): Promise<T> => {
   const res = await fetch(`${BASE}${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined
   });
-  if (!res.ok) throw new Error(`PUT ${path} → ${res.status}`);
-}
+  if (!res.ok) throw new Error(`${method} ${path} → ${res.status}`);
+  return method === "DELETE" ? undefined as T : res.json() as Promise<T>;
+};
 
-async function post(path: string, body: unknown): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error(`POST ${path} → ${res.status}`);
-}
-
-async function del(path: string): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`DELETE ${path} → ${res.status}`);
-}
+const get = <T>(path: string) => req<T>("GET", path);
+const put = (path: string, body: unknown) => req("PUT", path, body);
+const post = (path: string, body: unknown) => req("POST", path, body);
+const del = (path: string) => req("DELETE", path);
 
 // ── Base Deals ────────────────────────────────────────────────
-export async function getBaseDeals(): Promise<BaseDeal[]> {
-  return get<BaseDeal[]>("/deals");
-}
-
-export async function saveBaseDeals(deals: BaseDeal[]): Promise<void> {
-  await put("/deals", deals);
-}
-
-export async function saveBaseDeal(deal: BaseDeal): Promise<void> {
-  await put(`/deals/${deal.id}`, deal);
-}
-
-export async function deleteBaseDeal(id: string): Promise<void> {
-  await del(`/deals/${id}`);
-}
-
-export async function deleteDealEverywhere(id: string): Promise<void> {
-  await del(`/deals/${id}`);
-}
+export const getBaseDeals = () => get<BaseDeal[]>("/deals");
+export const saveBaseDeals = (deals: BaseDeal[]) => put("/deals", deals);
+export const saveBaseDeal = (deal: BaseDeal) => put(`/deals/${deal.id}`, deal);
+export const deleteBaseDeal = (id: string) => del(`/deals/${id}`);
+export const deleteDealEverywhere = (id: string) => del(`/deals/${id}`);
 
 // ── Months ────────────────────────────────────────────────────
-export async function getMonths(): Promise<MonthMeta[]> {
-  return get<MonthMeta[]>("/months");
-}
-
-export async function createNextMonth(
-  fromMonthId: string,
-  newMonthId: string,
-  label: string
-): Promise<void> {
-  await post("/months/next", { fromMonthId, newMonthId, label });
-}
+export const getMonths = () => get<MonthMeta[]>("/months");
+export const createNextMonth = (fromMonthId: string, newMonthId: string, label: string) =>
+  post("/months/next", { fromMonthId, newMonthId, label });
+export const deleteMonth = (monthId: string) => del(`/months/${monthId}`);
 
 // ── Month Records ─────────────────────────────────────────────
-export async function getMonthRecords(monthId: string): Promise<MonthRecord[]> {
-  return get<MonthRecord[]>(`/month-records/${monthId}`);
-}
+export const getMonthRecords = (monthId: string) =>
+  get<MonthRecord[]>(`/month-records/${monthId}`);
+export const saveMonthRecord = (record: MonthRecord) =>
+  put(`/month-records/${record.id}`, record);
+export const saveMonthRecords = (records: MonthRecord[]) =>
+  put("/month-records", records);
 
-export async function saveMonthRecord(record: MonthRecord): Promise<void> {
-  await put(`/month-records/${record.id}`, record);
-}
-
-export async function saveMonthRecords(records: MonthRecord[]): Promise<void> {
-  await put("/month-records", records);
-}
-
-export async function deleteMonthRecordsForDeal(_dealId: string): Promise<void> {
-  // handled server-side by DELETE /deals/:id
-}
-
-// ── Propagate snapshots ───────────────────────────────────────
-export async function propagateSnapshotForward(
-  dealId: string,
-  fromMonthId: string,
-  newRecovered: number,
-  newRemaining: number
-): Promise<void> {
-  await post("/propagate-snapshot", {
-    dealId,
-    fromMonthId,
-    newRecovered,
-    newRemaining
-  });
-}
+// ── Snapshot propagation ──────────────────────────────────────
+export const propagateSnapshotForward = (
+  dealId: string, fromMonthId: string, newRecovered: number, newRemaining: number
+) => post("/propagate-snapshot", { dealId, fromMonthId, newRecovered, newRemaining });
 
 // ── Meta ──────────────────────────────────────────────────────
-export async function getActiveMonthId(): Promise<string | undefined> {
+export const getActiveMonthId = async (): Promise<string | undefined> => {
   const { value } = await get<{ value: string | null }>("/meta/activeMonthId");
   return value ?? undefined;
-}
+};
+export const setActiveMonthId = (monthId: string) =>
+  put("/meta/activeMonthId", { value: monthId });
 
-export async function setActiveMonthId(monthId: string): Promise<void> {
-  await put("/meta/activeMonthId", { value: monthId });
-}
-
-export async function getFormulas(): Promise<FormulaTemplates | undefined> {
+export const getFormulas = async (): Promise<FormulaTemplates | undefined> => {
   const { value } = await get<{ value: FormulaTemplates | null }>("/meta/formulas");
   return value ?? undefined;
-}
+};
+export const setFormulas = (formulas: FormulaTemplates) =>
+  put("/meta/formulas", { value: formulas });
 
-export async function setFormulas(formulas: FormulaTemplates): Promise<void> {
-  await put("/meta/formulas", { value: formulas });
-}
-
-export async function deleteMonth(monthId: string): Promise<void> {
-  await del(`/months/${monthId}`);
-}
-
-export async function getAllRecordsForDeal(dealId: string): Promise<MonthRecord[]> {
-  return get<MonthRecord[]>(`/deals/${dealId}/all-records`);
-}
+export const getAllRecordsForDeal = (dealId: string) =>
+  get<MonthRecord[]>(`/deals/${dealId}/all-records`);
