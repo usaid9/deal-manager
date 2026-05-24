@@ -183,7 +183,6 @@ export default function App() {
   }, [deals]);
 
   const sortedMonths = useMemo(() => [...months].sort((a, b) => b.id.localeCompare(a.id)), [months]);
-  const activeMonthLabel = useMemo(() => months.find((m) => m.id === activeMonthId)?.label ?? "", [activeMonthId, months]);
 
   const visibleDeals = useMemo(() => {
     if (!activeMonthId) return deals;
