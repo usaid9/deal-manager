@@ -7,7 +7,7 @@ import { recalculateDeals, calcInstalment } from "./lib/compute";
 import {
   createNextMonth, deleteDealEverywhere, getActiveMonthId, getBaseDeals,
   getFormulas, getMonthRecords, getMonths, propagateSnapshotForward,
-  saveBaseDeals, saveBaseDeal, saveMonthRecord, 
+  saveBaseDeals, saveBaseDeal, saveMonthRecord,
   setActiveMonthId
 } from "./lib/store";
 import { DEFAULT_FORMULAS } from "./lib/formulas";
@@ -15,7 +15,7 @@ import type { BaseDeal, Deal, FormulaTemplates, MonthMeta, MonthRecord } from ".
 
 const currency = new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR", maximumFractionDigits: 0 });
 
-// ── In-memory cache (survives back-navigation within the same tab) ──────────
+// ── In-memory cache ──────────────────────────────────────────
 const _cache: {
   baseDeals?: BaseDeal[];
   months?: MonthMeta[];
@@ -41,6 +41,34 @@ const monthIdForDate = (d: Date) =>
 const monthLabelForDate = (d: Date) =>
   d.toLocaleString("en-US", { month: "short", year: "numeric" });
 
+// Given a YYYY-MM string, return the next month's id and label
+const nextMonthInfo = (monthId: string): { id: string; label: string } => {
+  const [y, m] = monthId.split("-").map(Number);
+  const next = new Date(y, m); // m is 0-indexed after split so this is correct
+  return {
+    id: monthIdForDate(next),
+    label: monthLabelForDate(next),
+  };
+};
+
+/**
+ * Ensure a month exists in the DB. If it doesn't, create it.
+ * Returns the (possibly updated) months list.
+ */
+async function ensureMonthExists(
+  monthId: string,
+  currentMonths: MonthMeta[]
+): Promise<MonthMeta[]> {
+  if (currentMonths.find((m) => m.id === monthId)) return currentMonths;
+  const [y, mo] = monthId.split("-").map(Number);
+  const label = new Date(y, mo - 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+  // Find the closest preceding month to use as "from"
+  const sorted = [...currentMonths].sort((a, b) => a.id.localeCompare(b.id));
+  const fromMonthId = sorted.filter((m) => m.id < monthId).pop()?.id ?? "";
+  await createNextMonth(fromMonthId, monthId, label);
+  return getMonths();
+}
+
 type ReceiptDraft = { amount: number; receivedAt: string; note: string; installments: number; targetMonthId: string };
 const emptyReceipt = (monthId: string | null): ReceiptDraft => ({
   amount: 0, receivedAt: new Date().toISOString().slice(0, 10), note: "", installments: 1,
@@ -56,6 +84,7 @@ export default function App() {
   const [formulas, setFormulaState] = useState<FormulaTemplates>(DEFAULT_FORMULAS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [creatingMonth, setCreatingMonth] = useState(false);
 
   const [query, setQuery] = useState("");
   const [referralFilter, setReferralFilter] = useState("all");
@@ -79,12 +108,10 @@ export default function App() {
 
   const detailMode = Boolean(detailDealId);
 
-
   useEffect(() => {
     let cancelled = false;
     const init = async () => {
       try {
-        // If cache is warm (back-navigation), use it immediately — no DB round-trips
         if (cache.baseDeals && cache.months && cache.activeMonthId) {
           const monthId = detailMonthId || cache.activeMonthId;
           const cachedRecords = cache.getRecords(monthId);
@@ -94,7 +121,6 @@ export default function App() {
             setActiveMonthState(monthId);
             setMonthRecords(cachedRecords ?? []);
             setLoading(false);
-            // If records weren't cached yet for this month, fetch them quietly
             if (!cachedRecords) {
               const records = await getMonthRecords(monthId);
               cache.setRecords(monthId, records);
@@ -240,10 +266,12 @@ export default function App() {
   const visibleDeals = useMemo(() => {
     if (!activeMonthId) return deals;
     return deals.filter((d) => {
-      // Never show a deal on months before it was created
-      const dealMonth = (d.dealDate || d.createdAt || "").slice(0, 7);
-      if (dealMonth && dealMonth > activeMonthId) return false;
+      // ── FIX 1: Never show a deal on months before its deal date ──
+      // Use dealDate if available, otherwise fall back to createdAt
+      const dealMonthId = (d.dealDate || d.createdAt || "").slice(0, 7);
+      if (dealMonthId && dealMonthId > activeMonthId) return false;
 
+      // ── FIX 2: Hide completed deals unless they got a receipt this month ──
       if (d.remainingAmount <= 0) {
         return d.receipts.some((r) => r.receivedAt?.slice(0, 7) === activeMonthId);
       }
@@ -266,15 +294,13 @@ export default function App() {
   }, [visibleDeals, query, receiptFilter, referralFilter]);
 
   const monthlyStats = useMemo(() => {
-    // All deals relevant this month: active ones + completed ones that finished this month
-    const allThisMonth = visibleDeals; // visibleDeals already includes completed-this-month deals
+    const allThisMonth = visibleDeals;
     const activeDeals = allThisMonth.filter((d) => d.remainingAmount > 0);
     const expectedThisMonth = activeDeals.reduce((s, d) => {
       const inst = d.instalment > 0 ? d.instalment : calcInstalment(d.invested, d.months);
       return s + inst;
     }, 0);
     const receivedThisMonth = monthRecords.reduce((s, r) => s + (r.received ?? 0), 0);
-    // Count receipts across ALL deals this month (including completed)
     const rcvdCount = allThisMonth.filter((d) => d.received > 0 || d.receipts.length > 0).length;
     const pendingCount = activeDeals.filter((d) => !(d.received > 0 || d.receipts.length > 0)).length;
     return { expectedThisMonth, receivedThisMonth, activeCount: activeDeals.length, rcvdCount, pendingCount };
@@ -291,10 +317,49 @@ export default function App() {
     window.location.href = url.toString();
   };
 
+  // ── Manual "Create Next Month" handler ───────────────────────────────────
+  const handleCreateNextMonth = async () => {
+    if (!activeMonthId || creatingMonth) return;
+    const { id: nextId, label: nextLabel } = nextMonthInfo(activeMonthId);
+    if (months.find((m) => m.id === nextId)) {
+      setFormWarning(`Month ${nextLabel} already exists.`);
+      return;
+    }
+    setCreatingMonth(true);
+    try {
+      await createNextMonth(activeMonthId, nextId, nextLabel);
+      const monthList = await getMonths();
+      cache.months = monthList;
+      setMonths(monthList);
+    } catch (e) {
+      setFormWarning(e instanceof Error ? e.message : "Failed to create month.");
+    } finally {
+      setCreatingMonth(false);
+    }
+  };
+
   const handleSaveDeal = async (deal: Deal) => {
     if (!activeMonthId) { setFormWarning("Select a month before saving."); return; }
     if (!deal.customer || !deal.dealNo) { setFormWarning("Deal number and customer are required."); return; }
     const now = new Date().toISOString();
+
+    // ── FIX 3: Determine the deal's own month and auto-create it if missing ──
+    const dealMonthId = deal.dealDate
+      ? deal.dealDate.slice(0, 7)
+      : activeMonthId;
+
+    let currentMonths = months;
+    if (!currentMonths.find((m) => m.id === dealMonthId)) {
+      try {
+        currentMonths = await ensureMonthExists(dealMonthId, currentMonths);
+        cache.months = currentMonths;
+        setMonths(currentMonths);
+      } catch (e) {
+        setFormWarning(e instanceof Error ? e.message : "Failed to create deal month.");
+        return;
+      }
+    }
+
     const { received, receipts, ...baseFields } = deal;
     const useManualBalance = deal.useManualBalance === true;
     const nextBase: BaseDeal = {
@@ -308,24 +373,45 @@ export default function App() {
       setFormWarning("Deal number already exists."); return;
     }
     const nextBaseDeals = drawerMode === "new" ? [nextBase, ...baseDeals] : baseDeals.map((d) => d.id === nextBase.id ? nextBase : d);
-    const existing = monthRecords.find((r) => r.dealId === nextBase.id);
+
+    // Record goes into the deal's own month (not necessarily the active view month)
+    const targetMonthId = dealMonthId;
+    const targetMonthRecords = targetMonthId === activeMonthId
+      ? monthRecords
+      : (cache.getRecords(targetMonthId) ?? await getMonthRecords(targetMonthId));
+
+    const existing = targetMonthRecords.find((r) => r.dealId === nextBase.id);
     const nextRecord: MonthRecord = {
-      id: existing?.id ?? `${activeMonthId}:${nextBase.id}`,
-      monthId: activeMonthId, dealId: nextBase.id,
+      id: existing?.id ?? `${targetMonthId}:${nextBase.id}`,
+      monthId: targetMonthId, dealId: nextBase.id,
       received: Number.isFinite(received) ? received : 0,
       receipts: Array.isArray(receipts) ? receipts : [],
       snapshotRecovered: existing?.snapshotRecovered ?? null,
       snapshotRemaining: existing?.snapshotRemaining ?? null,
       createdAt: existing?.createdAt ?? now, updatedAt: now
     };
-    const nextMonthRecords = existing ? monthRecords.map((r) => r.dealId === nextBase.id ? nextRecord : r) : [nextRecord, ...monthRecords];
-    setMonthRecords(nextMonthRecords);
+
+    // Update the correct month's records in cache
+    if (targetMonthId === activeMonthId) {
+      const nextMonthRecords = existing
+        ? monthRecords.map((r) => r.dealId === nextBase.id ? nextRecord : r)
+        : [nextRecord, ...monthRecords];
+      setMonthRecords(nextMonthRecords);
+      cache.setRecords(activeMonthId, nextMonthRecords);
+    } else {
+      const nextTargetRecords = existing
+        ? targetMonthRecords.map((r) => r.dealId === nextBase.id ? nextRecord : r)
+        : [nextRecord, ...targetMonthRecords];
+      cache.setRecords(targetMonthId, nextTargetRecords);
+    }
+
     await saveMonthRecord(nextRecord);
-    const recalculated = recalculateDeals(mergeDeals(nextBaseDeals, nextMonthRecords));
+    const recalculated = recalculateDeals(mergeDeals(nextBaseDeals, targetMonthId === activeMonthId
+      ? (cache.getRecords(activeMonthId) ?? [])
+      : monthRecords));
     const sanitized = recalculated.map(({ received: _r, receipts: _rc, snapshotRecovered: _src, snapshotRemaining: _srm, ...d }) => d);
     setBaseDeals(sanitized);
     cache.baseDeals = sanitized;
-    cache.setRecords(activeMonthId, nextMonthRecords);
     await saveBaseDeals(sanitized);
     setDrawerOpen(false); setFormWarning(null);
   };
@@ -343,10 +429,9 @@ export default function App() {
     }
     let currentMonths = months;
     if (!currentMonths.find((m) => m.id === targetMonthId)) {
-      const [y, mo] = targetMonthId.split("-").map(Number);
-      const label = new Date(y, mo - 1).toLocaleString("en-US", { month: "short", year: "numeric" });
-      await createNextMonth(activeMonthId ?? "", targetMonthId, label);
-      currentMonths = await getMonths(); setMonths(currentMonths);
+      currentMonths = await ensureMonthExists(targetMonthId, currentMonths);
+      cache.months = currentMonths;
+      setMonths(currentMonths);
     }
     const now = new Date().toISOString();
     const newReceipt = { id: crypto.randomUUID(), dealId: receiptDealId, amount: receiptDraft.amount, receivedAt: new Date(receiptDraft.receivedAt).toISOString(), note: receiptDraft.note, installments: receiptDraft.installments };
@@ -401,15 +486,15 @@ export default function App() {
     setMonthRecords(records);
   };
 
-  
-
-
-
-
   if (loading) return <div className="loading"><div className="spinner" /><p>Loading deals database...</p></div>;
   if (error) return <div className="loading"><h2>Something went wrong</h2><p>{error}</p></div>;
 
   const drawerIsOpen = detailMode ? Boolean(selectedDeal) : drawerOpen;
+
+  // Compute what "next month" would be to show on the button
+  const nextMonthLabel = activeMonthId ? nextMonthInfo(activeMonthId).label : "";
+  const nextMonthId = activeMonthId ? nextMonthInfo(activeMonthId).id : "";
+  const nextMonthExists = months.some((m) => m.id === nextMonthId);
 
   return (
     <div className={`app ${detailMode ? "app--detail" : ""}${viewMode === "excel" ? " app--excel" : ""}`}>
@@ -429,6 +514,20 @@ export default function App() {
                       <option key={m.id} value={m.id}>{m.label}</option>
                     ))}
                   </select>
+
+                  {/* ── Manual "Create Next Month" button ── */}
+                  {!nextMonthExists && activeMonthId && (
+                    <button
+                      className="btn btn--ghost btn--sm"
+                      style={{ whiteSpace: "nowrap", borderColor: "var(--accent)", color: "var(--accent)" }}
+                      onClick={() => void handleCreateNextMonth()}
+                      disabled={creatingMonth}
+                      title={`Create ${nextMonthLabel}`}
+                    >
+                      {creatingMonth ? "Creating…" : `+ ${nextMonthLabel}`}
+                    </button>
+                  )}
+
                   <div className="view-toggle">
                     <button className={`view-toggle__btn${viewMode === "cards" ? " view-toggle__btn--active" : ""}`} onClick={() => setViewMode("cards")}>⊞ Cards</button>
                     <button className={`view-toggle__btn${viewMode === "excel" ? " view-toggle__btn--active" : ""}`} onClick={() => setViewMode("excel")}>⊟ Table</button>
@@ -522,8 +621,6 @@ export default function App() {
         onDelete={handleDeleteDeal}
       />
 
-      
-
       <Modal open={receiptOpen} title="Add receipt" onClose={() => setReceiptOpen(false)}>
         <div className="modal__form">
           <label>Month
@@ -554,8 +651,6 @@ export default function App() {
           <button className="toast__close" onClick={() => setFormWarning(null)}>×</button>
         </div>
       )}
-
-
     </div>
   );
 }
