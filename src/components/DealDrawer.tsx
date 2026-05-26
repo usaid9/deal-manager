@@ -71,7 +71,7 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
 
   // Receipt pills grouped by month
   const receiptMonths = useMemo(() => {
-    const grouped: { monthId: string; label: string; amount: number }[] = [];
+    const grouped: { monthId: string; label: string; amount: number; installments: number }[] = [];
     const seen = new Set<string>();
     for (const rec of allRecords) {
       if (!seen.has(rec.monthId) && rec.receipts.length > 0) {
@@ -79,12 +79,18 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
         grouped.push({
           monthId: rec.monthId,
           label: new Date(rec.monthId + "-01").toLocaleString("en-US", { month: "short", year: "2-digit" }),
-          amount: rec.receipts.reduce((s, r) => s + r.amount, 0)
+          amount: rec.receipts.reduce((s, r) => s + r.amount, 0),
+          installments: rec.receipts.reduce((s, r) => s + (r.installments ?? 0), 0)
         });
       }
     }
     if ((draft.receipts ?? []).length > 0 && allRecords.length === 0) {
-      grouped.push({ monthId: "current", label: "This month", amount: draft.receipts.reduce((s, r) => s + r.amount, 0) });
+      grouped.push({
+        monthId: "current",
+        label: "This month",
+        amount: draft.receipts.reduce((s, r) => s + r.amount, 0),
+        installments: draft.receipts.reduce((s, r) => s + (r.installments ?? 0), 0)
+      });
     }
     return grouped.sort((a, b) => b.monthId.localeCompare(a.monthId));
   }, [allRecords, draft.receipts]);
@@ -114,12 +120,18 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
         <div>
           <p className="drawer__eyebrow">{mode === "new" ? "New deal" : `Deal #${draft.dealNo}`}</p>
           <h2 style={{ margin: "2px 0 6px" }}>{draft.customer || "Untitled"}</h2>
-          {mode === "view" && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              <span className={`pill ${isClosed ? "pill--closed" : "pill--active"}`}>{isClosed ? "Closed" : "Active"}</span>
-              <span className={`pill ${receivedThisMonth ? "pill--rcvd" : "pill--pending"}`}>{receivedThisMonth ? "✓ Received" : "⏳ Pending"}</span>
-            </div>
-          )}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <span className="deal-card__deal-no">#{draft.dealNo}</span>
+            {draft.dealDate && (
+              <span className="deal-card__date">{new Date(draft.dealDate).toLocaleDateString("en-GB")}</span>
+            )}
+            {mode === "view" && (
+              <>
+                <span className={`pill ${isClosed ? "pill--closed" : "pill--active"}`}>{isClosed ? "closed" : "active"}</span>
+                <span className={`pill ${receivedThisMonth ? "pill--rcvd" : "pill--pending"}`}>{receivedThisMonth ? "received" : "pending"}</span>
+              </>
+            )}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {mode === "view" && onDelete && (
@@ -193,7 +205,7 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
                 <div className="receipt-pills">
                   {receiptMonths.map((g) => (
                     <span key={g.monthId} className="receipt-pill" title={fmt(g.amount)}>
-                      {g.label} · {fmt(g.amount)}
+                      {g.label} · {g.installments} inst · {fmt(g.amount)}
                     </span>
                   ))}
                 </div>

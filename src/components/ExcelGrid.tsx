@@ -8,6 +8,8 @@ import type { BaseDeal, Deal, MonthMeta, MonthRecord } from "../lib/types";
 const currency = (v: number) =>
   new Intl.NumberFormat("en-PK", { maximumFractionDigits: 0 }).format(v);
 
+const normalizeReferral = (value: string) => value.trim().toLowerCase();
+
 // flex weights — proportional widths; columns scale to fill viewport
 const COLS: { key: string; label: string; flex: number; editable?: boolean; readOnly?: boolean; type?: string }[] = [
   { key: "dealNo",          label: "Deal No",   flex: 72,  editable: true, type: "text" },
@@ -103,7 +105,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
       return {
         ...d,
         received: cumulativeReceivedMap.get(d.id) ?? 0,
-        instalRcvd: cumulativeInstalMap.get(d.id) ?? 0,
+        instalRcvd: (d.instalRcvd ?? 0) + (cumulativeInstalMap.get(d.id) ?? 0),
         receipts: r?.receipts ?? [],
         snapshotRecovered: r?.snapshotRecovered ?? null,
         snapshotRemaining: r?.snapshotRemaining ?? null,
@@ -132,8 +134,8 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
   }, [thisMonthRecordMap]);
 
   const referralOptions = useMemo(() => {
-    const vals = new Set(dealsForMonth.map((d) => d.referral).filter(Boolean));
-    return ["all", ...Array.from(vals)];
+    const vals = new Set(dealsForMonth.map((d) => normalizeReferral(d.referral)).filter((v) => v));
+    return ["all", ...Array.from(vals).sort()];
   }, [dealsForMonth]);
 
   const visibleDeals = useMemo(() => {
@@ -147,7 +149,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
   const filteredDeals = useMemo(() => {
     const low = filterText.trim().toLowerCase();
     return visibleDeals.filter((d) => {
-      if (filterReferral !== "all" && d.referral !== filterReferral) return false;
+      if (filterReferral !== "all" && normalizeReferral(d.referral) !== filterReferral) return false;
       const receivedThisMonth = isReceivedThisMonth(d.id);
       if (filterStatus === "received" && !receivedThisMonth) return false;
       if (filterStatus === "pending" && receivedThisMonth) return false;
@@ -262,7 +264,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
         <div className="excel-ribbon__group">
           <label className="excel-ribbon__label">Referral</label>
           <select className="excel-ribbon__sel" value={filterReferral} onChange={(e) => setFilterReferral(e.target.value)}>
-            {referralOptions.map((o) => <option key={o} value={o}>{o === "all" ? "All" : o}</option>)}
+            {referralOptions.map((o) => <option key={o} value={o}>{o === "all" ? "all" : o}</option>)}
           </select>
         </div>
         <div className="excel-ribbon__group">

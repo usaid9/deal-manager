@@ -41,6 +41,8 @@ const monthIdForDate = (d: Date) =>
 const monthLabelForDate = (d: Date) =>
   d.toLocaleString("en-US", { month: "short", year: "numeric" });
 
+const normalizeReferral = (value: string) => value.trim().toLowerCase();
+
 type ReceiptDraft = { amount: number; receivedAt: string; note: string; installments: number; targetMonthId: string };
 const emptyReceipt = (monthId: string | null): ReceiptDraft => ({
   amount: 0, receivedAt: new Date().toISOString().slice(0, 10), note: "", installments: 1,
@@ -215,7 +217,7 @@ export default function App() {
       const cumulativeReceived = cumulativeReceivedMap.get(d.id) ?? 0;
       const remaining = Math.max(0, dealTotal - cumulativeReceived);
       const recovered = Math.max(0, dealTotal - remaining);
-      const instalRcvd = cumulativeInstalMap.get(d.id) ?? d.instalRcvd ?? 0;
+      const instalRcvd = (d.instalRcvd ?? 0) + (cumulativeInstalMap.get(d.id) ?? 0);
       return {
         ...d,
         received: r?.received ?? 0,
@@ -231,8 +233,8 @@ export default function App() {
   }, [baseDeals, monthRecords, cumulativeInstalMap, cumulativeReceivedMap]);
 
   const referralOptions = useMemo(() => {
-    const vals = new Set(deals.map((d) => d.referral).filter(Boolean));
-    return ["all", ...Array.from(vals)];
+    const vals = new Set(deals.map((d) => normalizeReferral(d.referral)).filter((v) => v));
+    return ["all", ...Array.from(vals).sort()];
   }, [deals]);
 
   const sortedMonths = useMemo(() => [...months].sort((a, b) => b.id.localeCompare(a.id)), [months]);
@@ -254,7 +256,7 @@ export default function App() {
         const rcvd = d.received > 0 || d.receipts.length > 0;
         if (receiptFilter === "received" && !rcvd) return false;
         if (receiptFilter === "pending" && rcvd) return false;
-        if (referralFilter !== "all" && d.referral !== referralFilter) return false;
+        if (referralFilter !== "all" && normalizeReferral(d.referral) !== referralFilter) return false;
         if (!low) return true;
         return [d.customer, d.dealNo, d.mobileNo, d.referral].map((v) => String(v).toLowerCase()).join(" ").includes(low);
       })
@@ -293,11 +295,14 @@ export default function App() {
     const now = new Date().toISOString();
     const { received, receipts, ...baseFields } = deal;
     const useManualBalance = deal.useManualBalance === true;
+    const receiptInstalments = cumulativeInstalMap.get(deal.id) ?? 0;
+    const openingInstalments = Math.max(0, (deal.instalRcvd ?? 0) - receiptInstalments);
     const nextBase: BaseDeal = {
       ...baseFields, dealDate: deal.dealDate ? new Date(deal.dealDate).toISOString() : "",
       useManualBalance,
       manualRecovered: useManualBalance ? (deal.manualRecovered ?? deal.recoveredAmount) : null,
       manualRemaining: useManualBalance ? (deal.manualRemaining ?? deal.remainingAmount) : null,
+      instalRcvd: openingInstalments,
       createdAt: deal.createdAt || now, updatedAt: now
     };
     if (baseDeals.some((d) => d.id !== nextBase.id && String(d.dealNo) === String(nextBase.dealNo))) {
@@ -360,7 +365,7 @@ export default function App() {
     const totalRcvd = (existing?.received ?? 0) + receiptDraft.amount;
     const newRemaining = Math.max(0, openingRemaining - totalRcvd);
     const newRecovered = Math.max(0, dealTotal - newRemaining);
-    const updatedBase: BaseDeal = { ...targetBase, instalRcvd: targetBase.instalRcvd + receiptDraft.installments, recoveredAmount: newRecovered, remainingAmount: newRemaining, manualRecovered: targetBase.useManualBalance ? newRecovered : targetBase.manualRecovered, manualRemaining: targetBase.useManualBalance ? newRemaining : targetBase.manualRemaining, updatedAt: now };
+    const updatedBase: BaseDeal = { ...targetBase, instalRcvd: targetBase.instalRcvd ?? 0, recoveredAmount: newRecovered, remainingAmount: newRemaining, manualRecovered: targetBase.useManualBalance ? newRecovered : targetBase.manualRecovered, manualRemaining: targetBase.useManualBalance ? newRemaining : targetBase.manualRemaining, updatedAt: now };
     if (targetMonthId === activeMonthId) {
       const nextMonthRecords = existing ? monthRecords.map((r) => r.dealId === receiptDealId ? nextRecord : r) : [nextRecord, ...monthRecords];
       setMonthRecords(nextMonthRecords);
@@ -460,7 +465,7 @@ export default function App() {
                   <span className="filter-select-icon">👤</span>
                   <select value={referralFilter} onChange={(e) => setReferralFilter(e.target.value)}>
                     {referralOptions.map((o) => (
-                      <option key={o} value={o}>{o === "all" ? "All referrals" : o}</option>
+                      <option key={o} value={o}>{o === "all" ? "all referrals" : o}</option>
                     ))}
                   </select>
                 </div>
