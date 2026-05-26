@@ -1,263 +1,394 @@
-import { openDB, type IDBPDatabase, type IDBPTransaction } from "idb";
-import type { BaseDeal, FormulaTemplates, MonthMeta, MonthRecord } from "./types";
+/**
+ * db.ts  –  RxDB-backed local persistence layer
+ *
+ * Replaces the raw `idb` implementation with RxDB using the IndexedDB
+ * storage adapter.  The public API surface (function names + signatures)
+ * is identical to the old db.ts so that store.ts, App.tsx and every other
+ * caller requires zero changes.
+ *
+ * Platforms:
+ *   • Browser / Electron  – getRxStorage() returns IndexedDB storage
+ *   • Capacitor / Android – getRxStorage() returns the same IndexedDB
+ *     storage (Chromium WebView ships IndexedDB natively).  No extra
+ *     SQLite plugin is required for the Gradle / Capacitor build.
+ *
+ * The getRxDb() promise is a singleton; every exported function awaits it
+ * before touching data.
+ */
 
-const DB_NAME = "deal-manager-db";
-const DB_VERSION = 3;
-const BASE_DEALS_STORE = "baseDeals";
-const MONTH_DEALS_STORE = "monthDeals";
-const MONTHS_STORE = "months";
-const META_STORE = "meta";
-const FORMULA_KEY = "formulaTemplates";
-const ACTIVE_MONTH_KEY = "activeMonthId";
+import {
+  createRxDatabase,
+  addRxPlugin,
+  type RxDatabase,
+  type RxCollection,
+  type RxDocument,
+} from "rxdb";
+import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
+import { RxDBDevModePlugin } from "rxdb/plugins/dev-mode";
+import { RxDBMigrationSchemaPlugin } from "rxdb/plugins/migration-schema";
+import { RxDBUpdatePlugin } from "rxdb/plugins/update";
+import { RxDBQueryBuilderPlugin } from "rxdb/plugins/query-builder";
 
-const monthIdForDate = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
+import type {
+  BaseDeal,
+  FormulaTemplates,
+  MonthMeta,
+  MonthRecord,
+} from "./types";
+
+// ── Dev-mode plugin (strips itself in production builds) ───────────────────
+if (import.meta.env.DEV) {
+  addRxPlugin(RxDBDevModePlugin);
+}
+addRxPlugin(RxDBMigrationSchemaPlugin);
+addRxPlugin(RxDBUpdatePlugin);
+addRxPlugin(RxDBQueryBuilderPlugin);
+
+// ── Schema definitions ─────────────────────────────────────────────────────
+
+const baseDealSchema = {
+  version: 0,
+  primaryKey: "id",
+  type: "object",
+  properties: {
+    id:               { type: "string", maxLength: 128 },
+    dealNo:           { type: ["number", "string"] },
+    dealDate:         { type: "string" },
+    invested:         { type: "number" },
+    months:           { type: "number" },
+    total:            { type: "number" },
+    useManualBalance: { type: "boolean" },
+    manualRecovered:  { type: ["number", "null"] },
+    manualRemaining:  { type: ["number", "null"] },
+    customer:         { type: "string" },
+    mobileNo:         { type: "string" },
+    referral:         { type: "string" },
+    instalment:       { type: "number" },
+    instalRcvd:       { type: "number" },
+    profitPct:        { type: "number" },
+    recoveredAmount:  { type: "number" },
+    remainingAmount:  { type: "number" },
+    createdAt:        { type: "string", maxLength: 32 },
+    updatedAt:        { type: "string", maxLength: 32 },
+  },
+  required: ["id"],
+  indexes: ["updatedAt"],
+} as const;
+
+const monthMetaSchema = {
+  version: 0,
+  primaryKey: "id",
+  type: "object",
+  properties: {
+    id:        { type: "string", maxLength: 32 },
+    label:     { type: "string" },
+    createdAt: { type: "string" },
+  },
+  required: ["id"],
+} as const;
+
+const monthRecordSchema = {
+  version: 0,
+  primaryKey: "id",
+  type: "object",
+  properties: {
+    id:                { type: "string", maxLength: 256 },
+    monthId:           { type: "string", maxLength: 32 },
+    dealId:            { type: "string", maxLength: 128 },
+    received:          { type: "number" },
+    receipts:          { type: "array",  items: { type: "object" } },
+    snapshotRecovered: { type: ["number", "null"] },
+    snapshotRemaining: { type: ["number", "null"] },
+    createdAt:         { type: "string", maxLength: 32 },
+    updatedAt:         { type: "string", maxLength: 32 },
+  },
+  required: ["id"],
+  indexes: ["monthId", "dealId"],
+} as const;
+
+/** key-value store for "meta" entries (activeMonthId, formulaTemplates) */
+const metaSchema = {
+  version: 0,
+  primaryKey: "key",
+  type: "object",
+  properties: {
+    key:   { type: "string", maxLength: 64 },
+    value: {},
+  },
+  required: ["key"],
+} as const;
+
+// ── Database type ──────────────────────────────────────────────────────────
+
+type DealManagerCollections = {
+  basedeals:    RxCollection<BaseDeal>;
+  months:       RxCollection<MonthMeta>;
+  monthrecords: RxCollection<MonthRecord>;
+  meta:         RxCollection<{ key: string; value: unknown }>;
 };
 
-const monthLabelForDate = (date: Date) =>
-  date.toLocaleString("en-US", { month: "short", year: "numeric" });
+type DealManagerDB = RxDatabase<DealManagerCollections>;
 
-const dbPromise = openDB(DB_NAME, DB_VERSION, {
-  upgrade: async (db: IDBPDatabase, oldVersion: number, _newVersion: number | null, transaction: IDBPTransaction<unknown, string[], "versionchange">) => {
-    if (!db.objectStoreNames.contains(META_STORE)) {
-      db.createObjectStore(META_STORE);
-    }
-    if (!db.objectStoreNames.contains(BASE_DEALS_STORE)) {
-      db.createObjectStore(BASE_DEALS_STORE, { keyPath: "id" });
-    }
-    if (!db.objectStoreNames.contains(MONTHS_STORE)) {
-      db.createObjectStore(MONTHS_STORE, { keyPath: "id" });
-    }
-    if (!db.objectStoreNames.contains(MONTH_DEALS_STORE)) {
-      const store = db.createObjectStore(MONTH_DEALS_STORE, { keyPath: "id" });
-      store.createIndex("monthId", "monthId");
-      store.createIndex("dealId", "dealId");
-    } else {
-      const store = transaction.objectStore(MONTH_DEALS_STORE);
-      if (!store.indexNames.contains("monthId")) store.createIndex("monthId", "monthId");
-      if (!store.indexNames.contains("dealId")) store.createIndex("dealId", "dealId");
-    }
+// ── Singleton initialisation ───────────────────────────────────────────────
 
-    // v1 → migrate old "deals" store
-    if (oldVersion < 2 && db.objectStoreNames.contains("deals")) {
-      const legacyStore = transaction.objectStore("deals");
-      const legacyDeals = await legacyStore.getAll();
-      const baseStore = transaction.objectStore(BASE_DEALS_STORE);
-      const monthStore = transaction.objectStore(MONTHS_STORE);
-      const monthDealsStore = transaction.objectStore(MONTH_DEALS_STORE);
-      const now = new Date();
-      const monthId = monthIdForDate(now);
-      const monthMeta: MonthMeta = { id: monthId, label: monthLabelForDate(now), createdAt: now.toISOString() };
-      await monthStore.put(monthMeta);
-      for (const legacy of legacyDeals) {
-        const { received, receipts, overrideMode, overrideValue, ...baseDeal } = legacy;
-        await baseStore.put(baseDeal);
-        const record: MonthRecord = {
-          id: `${monthId}:${legacy.id}`,
-          monthId,
-          dealId: legacy.id,
-          received: typeof received === "number" ? received : 0,
-          receipts: Array.isArray(receipts) ? receipts : [],
-          snapshotRecovered: null,
-          snapshotRemaining: null,
-          createdAt: legacy.createdAt || monthMeta.createdAt,
-          updatedAt: legacy.updatedAt || monthMeta.createdAt
-        };
-        await monthDealsStore.put(record);
-      }
-      db.deleteObjectStore("deals");
-      await transaction.objectStore(META_STORE).put(monthId, ACTIVE_MONTH_KEY);
-    }
+let _dbPromise: Promise<DealManagerDB> | null = null;
 
-    // v2 → add snapshot fields to existing monthDeals records
-    if (oldVersion < 3 && db.objectStoreNames.contains(MONTH_DEALS_STORE)) {
-      const store = transaction.objectStore(MONTH_DEALS_STORE);
-      const all = await store.getAll();
-      for (const rec of all) {
-        if (rec.snapshotRecovered === undefined) {
-          rec.snapshotRecovered = null;
-          rec.snapshotRemaining = null;
-          await store.put(rec);
-        }
-      }
-    }
-  }
-});
+/**
+ * getRxDb() – returns (and lazily creates) the singleton RxDatabase.
+ *
+ * Storage choice:
+ *   getRxStorageDexie() wraps Dexie.js which wraps IndexedDB.  It works
+ *   in all Chromium-based environments: desktop browsers, Electron
+ *   (chromium renderer), and Capacitor Android (Chromium WebView).
+ *   No native plugin or Gradle dependency is required.
+ */
+export function getRxDb(): Promise<DealManagerDB> {
+  if (_dbPromise) return _dbPromise;
+
+  _dbPromise = (async () => {
+    const db = await createRxDatabase<DealManagerCollections>({
+      name: "dealmanagerdb",
+      storage: getRxStorageDexie(),
+      ignoreDuplicate: true,
+    });
+
+    await db.addCollections({
+      basedeals: {
+        schema: baseDealSchema,
+        migrationStrategies: {},
+      },
+      months: {
+        schema: monthMetaSchema,
+        migrationStrategies: {},
+      },
+      monthrecords: {
+        schema: monthRecordSchema,
+        migrationStrategies: {},
+      },
+      meta: {
+        schema: metaSchema,
+        migrationStrategies: {},
+      },
+    });
+
+    return db;
+  })();
+
+  return _dbPromise;
+}
+
+// ── Helper: strip RxDocument wrapper → plain JS object ────────────────────
+
+function toPlain<T>(doc: RxDocument<T> | null): T | undefined {
+  return doc ? (doc.toJSON() as T) : undefined;
+}
+
+function toPlainArray<T>(docs: RxDocument<T>[]): T[] {
+  return docs.map((d) => d.toJSON() as T);
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+const META_ACTIVE_MONTH = "activeMonthId";
+const META_FORMULAS     = "formulaTemplates";
+
+function monthIdForDate(date: Date): string {
+  const year  = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+function monthLabelForDate(date: Date): string {
+  return date.toLocaleString("en-US", { month: "short", year: "numeric" });
+}
+
+// ── Base Deals ─────────────────────────────────────────────────────────────
 
 export async function getBaseDeals(): Promise<BaseDeal[]> {
-  const db = await dbPromise;
-  return db.getAll(BASE_DEALS_STORE);
+  const db   = await getRxDb();
+  const docs = await db.basedeals.find().exec();
+  return toPlainArray(docs);
 }
 
 export async function saveBaseDeals(deals: BaseDeal[]): Promise<void> {
-  const db = await dbPromise;
-  const tx = db.transaction(BASE_DEALS_STORE, "readwrite");
-  await Promise.all(deals.map((deal) => tx.store.put(deal)));
-  await tx.done;
+  const db = await getRxDb();
+  await db.basedeals.bulkUpsert(deals);
 }
 
 export async function saveBaseDeal(deal: BaseDeal): Promise<void> {
-  const db = await dbPromise;
-  await db.put(BASE_DEALS_STORE, deal);
+  const db = await getRxDb();
+  await db.basedeals.upsert(deal);
 }
 
 export async function deleteBaseDeal(id: string): Promise<void> {
-  const db = await dbPromise;
-  await db.delete(BASE_DEALS_STORE, id);
+  const db  = await getRxDb();
+  const doc = await db.basedeals.findOne(id).exec();
+  if (doc) await doc.remove();
 }
 
+// ── Months ─────────────────────────────────────────────────────────────────
+
 export async function getMonths(): Promise<MonthMeta[]> {
-  const db = await dbPromise;
-  return db.getAll(MONTHS_STORE);
+  const db   = await getRxDb();
+  const docs = await db.months.find().exec();
+  return toPlainArray(docs);
 }
 
 /**
- * Create a new month by snapshotting the current recovered/remaining
- * from `fromMonthId` for every open deal. Each deal in the new month
- * starts with received=0, receipts=[], but carries the closing balance
- * of the source month as its opening snapshot.
+ * createNextMonth – mirrors the old idb implementation exactly.
+ *
+ * Creates a new MonthMeta and seeds MonthRecords from the closing state of
+ * `fromMonthId` (or from all open base deals when fromMonthId is empty).
  */
 export async function createNextMonth(
   fromMonthId: string,
-  newMonthId: string,
-  label: string
+  newMonthId:  string,
+  label:       string
 ): Promise<void> {
-  const db = await dbPromise;
-  const [baseDeals, fromRecords] = await Promise.all([
-    db.getAll(BASE_DEALS_STORE),
-    db.getAllFromIndex(MONTH_DEALS_STORE, "monthId", fromMonthId)
-  ]);
+  const db = await getRxDb();
 
-  const recordMap = new Map(fromRecords.map((r: MonthRecord) => [r.dealId, r]));
+  // If newMonthId is empty this was called from a migration path – generate
+  if (!newMonthId) {
+    newMonthId = monthIdForDate(new Date());
+    label      = label || monthLabelForDate(new Date());
+  }
+
   const now = new Date().toISOString();
 
-  // open deals = remaining > 0
-  const openDeals = baseDeals.filter((d: BaseDeal) => d.remainingAmount > 0);
+  // Upsert the month meta
+  await db.months.upsert({ id: newMonthId, label, createdAt: now });
 
-  const tx = db.transaction([MONTHS_STORE, MONTH_DEALS_STORE], "readwrite");
-  await tx.objectStore(MONTHS_STORE).put({ id: newMonthId, label, createdAt: now });
+  // Gather base deals + prior-month records
+  const [baseDealDocs, fromRecordDocs] = await Promise.all([
+    db.basedeals.find().exec(),
+    fromMonthId
+      ? db.monthrecords.find({ selector: { monthId: fromMonthId } }).exec()
+      : Promise.resolve([] as RxDocument<MonthRecord>[]),
+  ]);
 
-  await Promise.all(
-    openDeals.map((deal: BaseDeal) => {
-      const prev = recordMap.get(deal.id);
-      // snapshot = whatever the closing balance was in the source month
-      const snapshotRecovered = prev
-        ? deal.recoveredAmount // base already updated by receipt saves
-        : deal.recoveredAmount;
-      const snapshotRemaining = prev
-        ? deal.remainingAmount
-        : deal.remainingAmount;
-      return tx.objectStore(MONTH_DEALS_STORE).put({
-        id: `${newMonthId}:${deal.id}`,
-        monthId: newMonthId,
-        dealId: deal.id,
-        received: 0,
-        receipts: [],
-        snapshotRecovered,
-        snapshotRemaining,
-        createdAt: now,
-        updatedAt: now
-      } as MonthRecord);
-    })
-  );
-  await tx.done;
+  const baseDeals   = toPlainArray<BaseDeal>(baseDealDocs);
+  const fromRecords = toPlainArray<MonthRecord>(fromRecordDocs);
+  const recordMap   = new Map(fromRecords.map((r) => [r.dealId, r]));
+
+  const openDeals = baseDeals.filter((d) => d.remainingAmount > 0);
+
+  const newRecords: MonthRecord[] = openDeals.map((deal) => {
+    const prev = recordMap.get(deal.id);
+    return {
+      id:                `${newMonthId}:${deal.id}`,
+      monthId:            newMonthId,
+      dealId:             deal.id,
+      received:           0,
+      receipts:           [],
+      snapshotRecovered:  prev ? deal.recoveredAmount : deal.recoveredAmount,
+      snapshotRemaining:  prev ? deal.remainingAmount : deal.remainingAmount,
+      createdAt:          now,
+      updatedAt:          now,
+    } as MonthRecord;
+  });
+
+  if (newRecords.length > 0) {
+    await db.monthrecords.bulkUpsert(newRecords);
+  }
 }
 
-/**
- * When base deal balances change (receipt added in any month),
- * propagate new snapshot to all LATER months' records for that deal.
- * Earlier months are NOT affected.
- */
+// ── Snapshot propagation ───────────────────────────────────────────────────
+
 export async function propagateSnapshotForward(
-  dealId: string,
-  fromMonthId: string,
+  dealId:       string,
+  fromMonthId:  string,
   newRecovered: number,
   newRemaining: number
 ): Promise<void> {
-  const db = await dbPromise;
-  const [allMonths, allRecordsForDeal] = await Promise.all([
-    db.getAll(MONTHS_STORE),
-    db.getAllFromIndex(MONTH_DEALS_STORE, "dealId", dealId)
+  const db = await getRxDb();
+
+  const [monthDocs, recordDocs] = await Promise.all([
+    db.months.find().exec(),
+    db.monthrecords.find({ selector: { dealId } }).exec(),
   ]);
 
-  // months strictly AFTER fromMonthId
+  const allMonths  = toPlainArray<MonthMeta>(monthDocs);
+  const allRecords = toPlainArray<MonthRecord>(recordDocs);
+
   const laterMonthIds = new Set(
-    allMonths
-      .filter((m: MonthMeta) => m.id > fromMonthId)
-      .map((m: MonthMeta) => m.id)
+    allMonths.filter((m) => m.id > fromMonthId).map((m) => m.id)
   );
 
-  const toUpdate = allRecordsForDeal.filter((r: MonthRecord) => laterMonthIds.has(r.monthId));
+  const toUpdate = allRecords.filter((r) => laterMonthIds.has(r.monthId));
   if (toUpdate.length === 0) return;
 
-  const tx = db.transaction(MONTH_DEALS_STORE, "readwrite");
-  await Promise.all(
-    toUpdate.map((r: MonthRecord) =>
-      tx.store.put({
-        ...r,
-        snapshotRecovered: newRecovered,
-        snapshotRemaining: newRemaining,
-        updatedAt: new Date().toISOString()
-      })
-    )
-  );
-  await tx.done;
+  const now = new Date().toISOString();
+  const updated = toUpdate.map((r) => ({
+    ...r,
+    snapshotRecovered: newRecovered,
+    snapshotRemaining: newRemaining,
+    updatedAt:         now,
+  })) as MonthRecord[];
+
+  await db.monthrecords.bulkUpsert(updated);
 }
 
+// ── Month Records ──────────────────────────────────────────────────────────
+
 export async function getMonthRecords(monthId: string): Promise<MonthRecord[]> {
-  const db = await dbPromise;
-  return db.getAllFromIndex(MONTH_DEALS_STORE, "monthId", monthId);
+  const db   = await getRxDb();
+  const docs = await db.monthrecords.find({ selector: { monthId } }).exec();
+  return toPlainArray(docs);
 }
 
 export async function saveMonthRecord(record: MonthRecord): Promise<void> {
-  const db = await dbPromise;
-  await db.put(MONTH_DEALS_STORE, record);
+  const db = await getRxDb();
+  await db.monthrecords.upsert(record);
 }
 
 export async function saveMonthRecords(records: MonthRecord[]): Promise<void> {
-  const db = await dbPromise;
-  const tx = db.transaction(MONTH_DEALS_STORE, "readwrite");
-  await Promise.all(records.map((record) => tx.store.put(record)));
-  await tx.done;
+  const db = await getRxDb();
+  await db.monthrecords.bulkUpsert(records);
 }
 
 export async function deleteMonthRecordsForDeal(dealId: string): Promise<void> {
-  const db = await dbPromise;
-  const tx = db.transaction(MONTH_DEALS_STORE, "readwrite");
-  const index = tx.store.index("dealId");
-  const keys = await index.getAllKeys(dealId);
-  await Promise.all(keys.map((key: IDBValidKey) => tx.store.delete(key)));
-  await tx.done;
+  const db   = await getRxDb();
+  const docs = await db.monthrecords.find({ selector: { dealId } }).exec();
+  await Promise.all(docs.map((d) => d.remove()));
 }
 
 export async function deleteDealEverywhere(dealId: string): Promise<void> {
-  const db = await dbPromise;
-  const tx = db.transaction([BASE_DEALS_STORE, MONTH_DEALS_STORE], "readwrite");
-  await tx.objectStore(BASE_DEALS_STORE).delete(dealId);
-  const index = tx.objectStore(MONTH_DEALS_STORE).index("dealId");
-  const keys = await index.getAllKeys(dealId);
-  await Promise.all(keys.map((key: IDBValidKey) => tx.objectStore(MONTH_DEALS_STORE).delete(key)));
-  await tx.done;
+  const db = await getRxDb();
+
+  const [dealDoc, recordDocs] = await Promise.all([
+    db.basedeals.findOne(dealId).exec(),
+    db.monthrecords.find({ selector: { dealId } }).exec(),
+  ]);
+
+  await Promise.all([
+    dealDoc ? dealDoc.remove() : Promise.resolve(),
+    ...recordDocs.map((d) => d.remove()),
+  ]);
 }
 
+// ── Meta ───────────────────────────────────────────────────────────────────
+
 export async function getActiveMonthId(): Promise<string | undefined> {
-  const db = await dbPromise;
-  return db.get(META_STORE, ACTIVE_MONTH_KEY);
+  const db  = await getRxDb();
+  const doc = await db.meta.findOne(META_ACTIVE_MONTH).exec();
+  return toPlain<{ key: string; value: string }>(doc)?.value;
 }
 
 export async function setActiveMonthId(monthId: string): Promise<void> {
-  const db = await dbPromise;
-  await db.put(META_STORE, monthId, ACTIVE_MONTH_KEY);
+  const db = await getRxDb();
+  await db.meta.upsert({ key: META_ACTIVE_MONTH, value: monthId });
 }
 
 export async function getFormulas(): Promise<FormulaTemplates | undefined> {
-  const db = await dbPromise;
-  return db.get(META_STORE, FORMULA_KEY);
+  const db  = await getRxDb();
+  const doc = await db.meta.findOne(META_FORMULAS).exec();
+  return toPlain<{ key: string; value: FormulaTemplates }>(doc)?.value;
 }
 
 export async function setFormulas(formulas: FormulaTemplates): Promise<void> {
-  const db = await dbPromise;
-  await db.put(META_STORE, formulas, FORMULA_KEY);
+  const db = await getRxDb();
+  await db.meta.upsert({ key: META_FORMULAS, value: formulas });
 }
+
+/** Alias for store.ts direct collection access */
+export const getRxDbInstance = getRxDb;

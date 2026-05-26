@@ -10,8 +10,6 @@ npm install
 Open `server/.env` and paste your MongoDB connection string:
 ```
 MONGO_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/deal-manager
-PORT=4000
-CORS_ORIGIN=http://localhost:5173
 ```
 
 ### 2. Frontend

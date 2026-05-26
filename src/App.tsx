@@ -2,14 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import DealCard from "./components/DealCard";
 import DealDrawer from "./components/DealDrawer";
 import Modal from "./components/Modal";
+import ExcelGrid from "./components/ExcelGrid";
 import { recalculateDeals, calcInstalment } from "./lib/compute";
 import {
   createNextMonth, deleteDealEverywhere, getActiveMonthId, getBaseDeals,
   getFormulas, getMonthRecords, getMonths, propagateSnapshotForward,
-  saveBaseDeals, saveBaseDeal, saveMonthRecord, saveMonthRecords,
-  setActiveMonthId, setFormulas
-} from "./lib/api";
-import { loadDealsFromExcel } from "./lib/excel";
+  saveBaseDeals, saveBaseDeal, saveMonthRecord, 
+  setActiveMonthId
+} from "./lib/store";
 import { DEFAULT_FORMULAS } from "./lib/formulas";
 import type { BaseDeal, Deal, FormulaTemplates, MonthMeta, MonthRecord } from "./lib/types";
 
@@ -50,6 +50,7 @@ const emptyReceipt = (monthId: string | null): ReceiptDraft => ({
 export default function App() {
   const [baseDeals, setBaseDeals] = useState<BaseDeal[]>([]);
   const [monthRecords, setMonthRecords] = useState<MonthRecord[]>([]);
+  const [recordsByMonth, setRecordsByMonth] = useState<Map<string, MonthRecord[]>>(new Map());
   const [months, setMonths] = useState<MonthMeta[]>([]);
   const [activeMonthId, setActiveMonthState] = useState<string | null>(null);
   const [formulas, setFormulaState] = useState<FormulaTemplates>(DEFAULT_FORMULAS);
@@ -68,8 +69,8 @@ export default function App() {
   const [receiptDealId, setReceiptDealId] = useState<string | null>(null);
   const [receiptDraft, setReceiptDraft] = useState<ReceiptDraft>(emptyReceipt(null));
   const [formWarning, setFormWarning] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"cards" | "excel">("cards");
 
- 
   const { detailDealId, detailMonthId } = useMemo(() => {
     if (typeof window === "undefined") return { detailDealId: null, detailMonthId: null };
     const p = new URLSearchParams(window.location.search);
@@ -77,6 +78,7 @@ export default function App() {
   }, []);
 
   const detailMode = Boolean(detailDealId);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -116,20 +118,7 @@ export default function App() {
           await setActiveMonthId(monthId);
         }
         const storedBaseDeals = await getBaseDeals();
-        if (storedBaseDeals.length === 0 && monthId) {
-          if (!monthList.find((m) => m.id === monthId)) {
-            await createNextMonth("", monthId, monthLabelForDate(new Date()));
-            monthList = await getMonths();
-          }
-          const { baseDeals: b, monthRecords: mr, formulas: f } =
-            await loadDealsFromExcel("/Deals Manager.xlsx", monthId);
-          await Promise.all([saveBaseDeals(b), saveMonthRecords(mr), setFormulas(f)]);
-          if (!cancelled) {
-            setFormulaState({ ...DEFAULT_FORMULAS, ...f });
-            setBaseDeals(b); setMonthRecords(mr);
-            cache.baseDeals = b; cache.setRecords(monthId, mr);
-          }
-        } else if (monthId) {
+        if (monthId) {
           const records = await getMonthRecords(monthId);
           cache.baseDeals = storedBaseDeals; cache.setRecords(monthId, records);
           if (!cancelled) { setBaseDeals(storedBaseDeals); setMonthRecords(records); }
@@ -160,6 +149,35 @@ export default function App() {
   }, [activeMonthId]);
 
   useEffect(() => {
+    if (!activeMonthId || months.length === 0) return;
+    let cancelled = false;
+    const load = async () => {
+      const targetMonths = months.filter((m) => m.id <= activeMonthId).map((m) => m.id);
+      const recordMap = new Map<string, MonthRecord[]>();
+      await Promise.all(
+        targetMonths.map(async (mId) => {
+          const cached = cache.getRecords(mId);
+          const records = cached ?? await getMonthRecords(mId);
+          recordMap.set(mId, records);
+          if (!cached) cache.setRecords(mId, records);
+        })
+      );
+      if (!cancelled) setRecordsByMonth(recordMap);
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [activeMonthId, months]);
+
+  useEffect(() => {
+    if (!activeMonthId) return;
+    setRecordsByMonth((prev) => {
+      const next = new Map(prev);
+      next.set(activeMonthId, monthRecords);
+      return next;
+    });
+  }, [activeMonthId, monthRecords]);
+
+  useEffect(() => {
     if (!detailMode || !detailDealId) return;
     setDrawerDealId(detailDealId); setDrawerMode("view"); setDrawerOpen(true);
   }, [detailDealId, detailMode]);
@@ -172,7 +190,45 @@ export default function App() {
     });
   };
 
-  const deals = useMemo(() => recalculateDeals(mergeDeals(baseDeals, monthRecords)), [baseDeals, monthRecords]);
+  const { cumulativeInstalMap, cumulativeReceivedMap } = useMemo(() => {
+    const instMap = new Map<string, number>();
+    const rcvdMap = new Map<string, number>();
+    if (!activeMonthId) return { cumulativeInstalMap: instMap, cumulativeReceivedMap: rcvdMap };
+    recordsByMonth.forEach((records, mId) => {
+      if (mId <= activeMonthId) {
+        records.forEach((r) => {
+          const instal = r.receipts?.reduce((s, rec) => s + (rec.installments ?? 0), 0) ?? 0;
+          instMap.set(r.dealId, (instMap.get(r.dealId) ?? 0) + instal);
+          rcvdMap.set(r.dealId, (rcvdMap.get(r.dealId) ?? 0) + (r.received ?? 0));
+        });
+      }
+    });
+    return { cumulativeInstalMap: instMap, cumulativeReceivedMap: rcvdMap };
+  }, [recordsByMonth, activeMonthId]);
+
+  const deals = useMemo(() => {
+    const currentMap = new Map(monthRecords.map((r) => [r.dealId, r]));
+    const merged = baseDeals.map((d) => {
+      const r = currentMap.get(d.id);
+      const effectiveInstalment = d.instalment > 0 ? d.instalment : calcInstalment(d.invested, d.months);
+      const dealTotal = d.total > 0 ? d.total : effectiveInstalment * d.months;
+      const cumulativeReceived = cumulativeReceivedMap.get(d.id) ?? 0;
+      const remaining = Math.max(0, dealTotal - cumulativeReceived);
+      const recovered = Math.max(0, dealTotal - remaining);
+      const instalRcvd = cumulativeInstalMap.get(d.id) ?? d.instalRcvd ?? 0;
+      return {
+        ...d,
+        received: r?.received ?? 0,
+        receipts: r?.receipts ?? [],
+        snapshotRecovered: r?.snapshotRecovered ?? null,
+        snapshotRemaining: r?.snapshotRemaining ?? null,
+        instalRcvd,
+        recoveredAmount: recovered,
+        remainingAmount: remaining,
+      };
+    });
+    return recalculateDeals(merged);
+  }, [baseDeals, monthRecords, cumulativeInstalMap, cumulativeReceivedMap]);
 
   const referralOptions = useMemo(() => {
     const vals = new Set(deals.map((d) => d.referral).filter(Boolean));
@@ -352,7 +408,7 @@ export default function App() {
   const drawerIsOpen = detailMode ? Boolean(selectedDeal) : drawerOpen;
 
   return (
-    <div className={`app ${detailMode ? "app--detail" : ""}`}>
+    <div className={`app ${detailMode ? "app--detail" : ""}${viewMode === "excel" ? " app--excel" : ""}`}>
       <main className="main">
         {!detailMode && (
           <>
@@ -369,7 +425,10 @@ export default function App() {
                       <option key={m.id} value={m.id}>{m.label}</option>
                     ))}
                   </select>
-                  
+                  <div className="view-toggle">
+                    <button className={`view-toggle__btn${viewMode === "cards" ? " view-toggle__btn--active" : ""}`} onClick={() => setViewMode("cards")}>⊞ Cards</button>
+                    <button className={`view-toggle__btn${viewMode === "excel" ? " view-toggle__btn--active" : ""}`} onClick={() => setViewMode("excel")}>⊟ Table</button>
+                  </div>
                 </div>
               </div>
               <div className="month-dashboard__stats">
@@ -392,7 +451,7 @@ export default function App() {
             </section>
 
             {/* Filters toolbar */}
-            <section className="toolbar">
+            {viewMode === "cards" && <section className="toolbar">
               <div className="search">
                 <input placeholder="Search name, deal no, referral…" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
@@ -414,9 +473,13 @@ export default function App() {
                   </select>
                 </div>
               </div>
-            </section>
+            </section>}
 
-            {filteredDeals.length === 0 ? (
+            {viewMode === "excel" && (
+              <ExcelGrid activeMonthId={activeMonthId} months={months} />
+            )}
+
+            {viewMode === "cards" && (filteredDeals.length === 0 ? (
               <section className="empty">
                 <h2>No deals match.</h2>
                 <p>Try another search or change the filters.</p>
@@ -428,7 +491,7 @@ export default function App() {
                     onReceive={(id) => { setReceiptDealId(id); setReceiptDraft(emptyReceipt(activeMonthId)); setReceiptOpen(true); }} />
                 ))}
               </section>
-            )}
+            ))}
           </>
         )}
 
@@ -487,6 +550,8 @@ export default function App() {
           <button className="toast__close" onClick={() => setFormWarning(null)}>×</button>
         </div>
       )}
+
+
     </div>
   );
 }
