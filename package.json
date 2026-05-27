@@ -1,22 +1,18 @@
 {
-  "name": "deal-manager",
+  "name": "deal-manager-online",
   "private": true,
   "version": "1.0.0",
-  "description": "Deal Manager",
+  "description": "Deal Manager (online)",
   "author": "usaid",
   "type": "module",
-  "main": "electron.cjs",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
-    "electron": "electron .",
-    "dist": "electron-builder --win"
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
-    "@capacitor/android": "^8.3.4",
-    "@capacitor/cli": "^8.3.4",
-    "@capacitor/core": "^8.3.4",
+    "rxdb": "15.39.0",
+    "rxjs": "7.8.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "xlsx": "^0.18.5"
@@ -25,15 +21,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
-    "electron": "^42.2.0",
-    "electron-builder": "^26.8.1",
     "typescript": "^5.6.3",
     "vite": "5.4.21"
-  },
-  "build": {
-    "appId": "com.dealmanager.app",
-    "files": ["dist/**/*", "electron.cjs"],
-    "win": { "target": "nsis", "forceCodeSigning": false },
-    "publish": null
   }
 }
