@@ -110,10 +110,9 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
       const dealTotal = d.total > 0 ? d.total : effectiveInstalment * d.months;
       const cumulativeReceived = cumulativeReceivedMap.get(d.id) ?? 0;
       const totalReceived = totalReceivedMap.get(d.id) ?? 0;
-      const baseRemaining = d.useManualBalance
-        ? (d.manualRemaining ?? (d.manualRecovered != null ? Math.max(0, dealTotal - d.manualRecovered) : d.remainingAmount))
-        : d.remainingAmount;
-      const remaining = Math.max(0, baseRemaining + (totalReceived - cumulativeReceived));
+      const remaining = d.useManualBalance
+        ? Math.max(0, d.remainingAmount)
+        : Math.max(0, d.remainingAmount + (totalReceived - cumulativeReceived));
       const recovered = Math.max(0, dealTotal - remaining);
       return {
         ...d,

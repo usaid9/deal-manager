@@ -15,19 +15,16 @@ type DealCardProps = {
   onReceive: (id: string) => void;
 };
 
-
 export default function DealCard({ deal, onSelect, onReceive }: DealCardProps) {
   const remaining = Math.max(0, deal.remainingAmount);
   const isClosed = remaining <= 0;
   const receivedThisMonth = deal.received > 0 || deal.receipts.length > 0;
   const expectedInstalment = deal.instalment > 0 ? deal.instalment : calcInstalment(deal.invested, deal.months);
-  
   const receivedAmount = deal.receipts.length > 0
     ? deal.receipts.reduce((sum, r) => sum + (Number.isFinite(r.amount) ? r.amount : 0), 0)
     : (Number.isFinite(deal.received) ? deal.received : 0);
 
   return (
-    
     <article
       className="deal-row"
       onClick={() => onSelect(deal.id)}

@@ -13,6 +13,7 @@ type Props = {
   deal: Deal | null;
   formulas: FormulaTemplates;
   onClose: () => void;
+  onRefresh?: () => void;
   onSave: (deal: Deal) => void;
   onAddReceipt: (dealId: string) => void;
   onDeleteReceipt?: (dealId: string, monthId: string, receiptId: string) => void | Promise<void>;
@@ -49,7 +50,7 @@ const emptyDeal = (): Deal => {
   };
 };
 
-export default function DealDrawer({ mode, open, variant = "panel", deal, onClose, onSave, onAddReceipt, onDeleteReceipt, onDelete }: Props) {
+export default function DealDrawer({ mode, open, variant = "panel", deal, onClose, onRefresh, onSave, onAddReceipt, onDeleteReceipt, onDelete }: Props) {
   const [draft, setDraft] = useState<Deal>(emptyDeal());
   const [editing, setEditing] = useState(false);
   const [customInstalment, setCustomInstalment] = useState(false);
@@ -221,6 +222,14 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {onRefresh && (
+            <button
+              className="btn btn--ghost btn--sm"
+              title="Reload modules"
+              aria-label="Reload modules"
+              onClick={onRefresh}
+            >Refresh</button>
+          )}
           {mode === "view" && onDelete && (
             <button className="btn btn--danger" onClick={() => onDelete(draft.id)}>Delete</button>
           )}

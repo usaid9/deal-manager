@@ -3,14 +3,15 @@ import DealCard from "./components/DealCard";
 import DealDrawer from "./components/DealDrawer";
 import Modal from "./components/Modal";
 import ExcelGrid from "./components/ExcelGrid";
+import SyncPanel from "./components/SyncPanel";
 import CustomSelect from "./components/CustomSelect";
 import { recalculateDeals, calcInstalment } from "./lib/compute";
 import {
   createNextMonth, deleteDealEverywhere, getActiveMonthId, getBaseDeals,
-  getFormulas, getMonthRecords, getMonths, propagateSnapshotForward,
-  saveBaseDeals, saveBaseDeal, saveMonthRecord, 
-  setActiveMonthId, seedFromMongoIfNeeded
+  getFormulas, getMonthRecords, getMonths, propagateSnapshotForward, saveBaseDeal, saveMonthRecord, 
+  setActiveMonthId
 } from "./lib/store";
+import type { SyncStatus } from "./lib/syncEngine";
 import { DEFAULT_FORMULAS } from "./lib/formulas";
 import type { BaseDeal, Deal, FormulaTemplates, MonthMeta, MonthRecord } from "./lib/types";
 
@@ -116,7 +117,10 @@ export default function App() {
   const [receiptTargetRecords, setReceiptTargetRecords] = useState<MonthRecord[]>([]);
   const [receiptRecordsLoading, setReceiptRecordsLoading] = useState(false);
   const [formWarning, setFormWarning] = useState<string | null>(null);
+  const syncStatus: SyncStatus = "idle";
+  const syncPending = 0;
   const [viewMode, setViewMode] = useState<"cards" | "excel">("cards");
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
 
   const { detailDealId, detailMonthId } = useMemo(() => {
     if (typeof window === "undefined") return { detailDealId: null, detailMonthId: null };
@@ -127,18 +131,7 @@ export default function App() {
   const detailMode = Boolean(detailDealId);
 
 
-  // ── Initial pull for online mode ───────────────────────────────────────
-  const [seedVersion, setSeedVersion] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    void seedFromMongoIfNeeded().then(() => {
-      if (cancelled) return;
-      cache.clearAll();
-      setSeedVersion((v) => v + 1);
-    });
-    return () => { cancelled = true; };
-  }, []);
+  const [seedVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -280,10 +273,9 @@ export default function App() {
       const dealTotal = d.total > 0 ? d.total : effectiveInstalment * d.months;
       const cumulativeReceived = cumulativeReceivedMap.get(d.id) ?? 0;
       const totalReceived = totalReceivedMap.get(d.id) ?? 0;
-      const baseRemaining = d.useManualBalance
-        ? (d.manualRemaining ?? (d.manualRecovered != null ? Math.max(0, dealTotal - d.manualRecovered) : d.remainingAmount))
-        : d.remainingAmount;
-      const remaining = Math.max(0, baseRemaining + (totalReceived - cumulativeReceived));
+      const remaining = d.useManualBalance
+        ? Math.max(0, d.remainingAmount)
+        : Math.max(0, d.remainingAmount + (totalReceived - cumulativeReceived));
       const recovered = Math.max(0, dealTotal - remaining);
       const instalRcvd = (d.instalRcvd ?? 0) + (cumulativeInstalMap.get(d.id) ?? 0);
       return {
@@ -315,9 +307,7 @@ export default function App() {
         const dealMonth = d.dealDate.slice(0, 7); // "YYYY-MM"
         if (dealMonth > activeMonthId) return false;
       }
-      if (d.remainingAmount <= 0) {
-        return d.receipts.some((r) => r.receivedAt?.slice(0, 7) === activeMonthId);
-      }
+      if (d.remainingAmount <= 0) return true;
       return true;
     });
   }, [deals, activeMonthId]);
@@ -414,7 +404,6 @@ export default function App() {
   const selectedDeal = useMemo(() => drawerDealId ? deals.find((d) => d.id === drawerDealId) ?? null : null, [deals, drawerDealId]);
 
   const receiptTargetMonthId = receiptDraft.targetMonthId || activeMonthId || "";
-  const receiptMonthRange = receiptDraft.targetMonthId ? monthRangeForId(receiptDraft.targetMonthId) : null;
 
   useEffect(() => {
     if (!receiptOpen) { setReceiptTargetRecords([]); setReceiptRecordsLoading(false); return; }
@@ -579,26 +568,28 @@ export default function App() {
     };
     const effectiveInstalment = targetBase.instalment > 0 ? targetBase.instalment : calcInstalment(targetBase.invested, targetBase.months);
     const dealTotal = targetBase.total > 0 ? targetBase.total : effectiveInstalment * targetBase.months;
-    const openingRemaining = existing?.snapshotRemaining ?? (targetBase.remainingAmount > 0 ? targetBase.remainingAmount : dealTotal);
+    const openingRemaining = existing?.snapshotRemaining ?? (() => {
+      const prior = Array.from(recordsByMonth.entries())
+        .filter(([mId]) => mId < targetMonthId)
+        .reduce((s, [, recs]) => s + (recs.find((r) => r.dealId === receiptDealId)?.received ?? 0), 0);
+      return Math.max(0, dealTotal - prior);
+    })();
     const totalRcvd = (existing?.received ?? 0) + receiptDraft.amount;
     let newRemaining = Math.max(0, openingRemaining - totalRcvd);
     let newRecovered = Math.max(0, dealTotal - newRemaining);
     if (targetBase.useManualBalance) {
-      if (targetBase.manualRemaining != null) {
-        newRemaining = Math.max(0, targetBase.manualRemaining);
-        newRecovered = Math.max(0, dealTotal - newRemaining);
-      } else if (targetBase.manualRecovered != null) {
-        newRecovered = Math.max(0, targetBase.manualRecovered);
-        newRemaining = Math.max(0, dealTotal - newRecovered);
-      }
+      newRemaining = Math.max(0, targetBase.remainingAmount - receiptDraft.amount);
+      newRecovered = Math.max(0, dealTotal - newRemaining);
     }
     const updatedBase: BaseDeal = {
       ...targetBase,
       instalRcvd: targetBase.instalRcvd ?? 0,
       recoveredAmount: newRecovered,
       remainingAmount: newRemaining,
-      manualRecovered: targetBase.manualRecovered,
-      manualRemaining: targetBase.manualRemaining,
+      // Keep manual-balance fields in sync so the next receipt operation and
+      // recalculateDeals always have the correct authoritative starting point.
+      manualRecovered: targetBase.useManualBalance ? newRecovered : targetBase.manualRecovered,
+      manualRemaining: targetBase.useManualBalance ? newRemaining : targetBase.manualRemaining,
       updatedAt: now
     };
     const updatedTargetRecords = existing
@@ -641,7 +632,7 @@ export default function App() {
     if (nextReceipts.length === existing.receipts.length) return;
 
     const now = new Date().toISOString();
-    const nextReceived = nextReceipts.reduce((s, r) => s + (r.amount ?? 0), 0);
+    const nextReceived = Math.max(0, (existing.received ?? 0) - deletedAmount);
     const nextRecord: MonthRecord = {
       ...existing,
       received: nextReceived,
@@ -651,24 +642,27 @@ export default function App() {
 
     const effectiveInstalment = targetBase.instalment > 0 ? targetBase.instalment : calcInstalment(targetBase.invested, targetBase.months);
     const dealTotal = targetBase.total > 0 ? targetBase.total : effectiveInstalment * targetBase.months;
-    let newRemaining = Math.max(0, Math.min(dealTotal, (Number.isFinite(targetBase.remainingAmount) ? targetBase.remainingAmount : dealTotal) + deletedAmount));
+    const openingRemaining = existing.snapshotRemaining ?? (() => {
+      const prior = Array.from(recordsByMonth.entries())
+        .filter(([mId]) => mId < targetMonthId)
+        .reduce((s, [, recs]) => s + (recs.find((r) => r.dealId === dealId)?.received ?? 0), 0);
+      return Math.max(0, dealTotal - prior);
+    })();
+    let newRemaining = Math.max(0, openingRemaining - nextReceived);
     let newRecovered = Math.max(0, dealTotal - newRemaining);
     if (targetBase.useManualBalance) {
-      if (targetBase.manualRemaining != null) {
-        newRemaining = Math.max(0, targetBase.manualRemaining);
-        newRecovered = Math.max(0, dealTotal - newRemaining);
-      } else if (targetBase.manualRecovered != null) {
-        newRecovered = Math.max(0, targetBase.manualRecovered);
-        newRemaining = Math.max(0, dealTotal - newRecovered);
-      }
+      newRemaining = Math.min(dealTotal, targetBase.remainingAmount + deletedAmount);
+      newRecovered = Math.max(0, dealTotal - newRemaining);
     }
     const updatedBase: BaseDeal = {
       ...targetBase,
       instalRcvd: targetBase.instalRcvd ?? 0,
       recoveredAmount: newRecovered,
       remainingAmount: newRemaining,
-      manualRecovered: targetBase.manualRecovered,
-      manualRemaining: targetBase.manualRemaining,
+      // Keep manual-balance fields in sync so the next receipt operation and
+      // recalculateDeals always have the correct authoritative starting point.
+      manualRecovered: targetBase.useManualBalance ? newRecovered : targetBase.manualRecovered,
+      manualRemaining: targetBase.useManualBalance ? newRemaining : targetBase.manualRemaining,
       updatedAt: now
     };
 
@@ -736,11 +730,13 @@ export default function App() {
   };
 
   const handleModuleRefresh = () => {
-    if (import.meta.env.DEV && import.meta.hot) {
-      import.meta.hot.invalidate();
-      return;
-    }
     cache.clearAll();
+    setRecordsByMonth(new Map());
+    setMonthRecords([]);
+    setBaseDeals([]);
+    setMonths([]);
+    setActiveMonthState(null);
+    setError(null);
     setLoading(true);
     setSeedVersion((v) => v + 1);
   };
@@ -802,6 +798,8 @@ export default function App() {
                       onClick={handleModuleRefresh}
                     >Refresh</button>
                   </div>
+                  {/* Connection status badge */}
+                  <span className="sync-badge sync-badge--idle" title="Click to view connection info" onClick={() => setSyncPanelOpen(true)} style={{ cursor: "pointer" }}>✓ Online</span>
                   <div className="view-toggle">
                     <button className={`view-toggle__btn${viewMode === "cards" ? " view-toggle__btn--active" : ""}`} onClick={() => setViewMode("cards")}>⊞ Cards</button>
                     <button className={`view-toggle__btn${viewMode === "excel" ? " view-toggle__btn--active" : ""}`} onClick={() => setViewMode("excel")}>⊟ Table</button>
@@ -933,6 +931,7 @@ export default function App() {
         mode={drawerMode} open={drawerIsOpen} variant={detailMode ? "page" : "panel"}
         deal={drawerMode === "view" ? selectedDeal : null} formulas={formulas}
         onClose={() => detailMode ? window.history.back() : setDrawerOpen(false)}
+        onRefresh={handleModuleRefresh}
         onSave={handleSaveDeal}
         onAddReceipt={(id) => { setReceiptDealId(id); setReceiptDraft(emptyReceipt(activeMonthId)); setReceiptOpen(true); }}
         onDeleteReceipt={handleDeleteReceipt}
@@ -1030,6 +1029,13 @@ export default function App() {
         </div>
       )}
 
+      <SyncPanel
+        open={syncPanelOpen}
+        onClose={() => setSyncPanelOpen(false)}
+        syncStatus={syncStatus}
+        pendingCount={syncPending}
+        onRefresh={() => setSeedVersion((v) => v + 1)}
+      />
     </div>
   );
 }

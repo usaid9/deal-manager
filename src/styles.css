@@ -124,6 +124,7 @@ body {
 .deal-row__recoverable {
   font-weight: 600;
   font-size: 15px;
+  min-width: 120px;
   text-align: right;
 }
 
@@ -519,13 +520,28 @@ body {
 
   .toolbar__filters {
     width: 100%;
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
+    overflow-x: hidden;
   }
 
-  select {
+  .filter-select-wrap select,
+  .toolbar__filters select {
+    padding: 4px 20px 4px 8px;
+    font-size: 10.5px;
+    line-height: 1.1;
+    border-radius: 7px;
+    min-width: 0;
+    width: 0;
+    flex: 1 1 0;
+    background-position: right 6px center;
+  }
+
+  .month-select {
     width: 100%;
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .deal-card {
@@ -609,6 +625,13 @@ body {
   min-width: 0;
 }
 
+.deal-row__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
 .deal-row__name {
   font-weight: 600;
   font-size: 14px;
@@ -616,6 +639,15 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 160px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.deal-row__deal-no {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+  flex-shrink: 0;
 }
 
 .deal-row__sub {
@@ -634,19 +666,26 @@ body {
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
+  min-width: 0;
 }
 
 .deal-row__badge {
-  width: 26px;
   height: 26px;
-  border-radius: 50%;
+  width: 88px;
+  min-width: 88px;
+  padding: 0 6px;
+  border-radius: 999px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
+  white-space: nowrap;
 }
+
+.deal-row__badge-text { display: inline; }
+.deal-row__badge-icon { display: none; }
 .deal-row__badge--yes { background: #d1fae5; color: #065f46; }
 .deal-row__badge--no  { background: #fee2e2; color: #991b1b; cursor: pointer; }
 
@@ -703,9 +742,21 @@ body {
 
   .main { padding: 14px 12px 60px; }
 
+  .deal-row__info { flex: 1 1 auto; }
+  .deal-row__title { width: 100%; flex-wrap: nowrap; gap: 6px; }
+  .deal-row__name { max-width: none; white-space: nowrap; }
+  .deal-row__deal-no { font-size: 14px; }
+  .deal-row__right { gap: 6px; }
+  .deal-row__recoverable { font-size: 11px; }
 
-  .deal-row__name { max-width: 120px; }
-  .deal-row__recoverable { font-size: 12px; }
+  .deal-row__badge {
+    width: 24px;
+    min-width: 24px;
+    padding: 0;
+    border-radius: 50%;
+  }
+  .deal-row__badge-text { display: none; }
+  .deal-row__badge-icon { display: inline; }
 }
 
 /* deal summary (compact read view) */
@@ -833,35 +884,181 @@ body {
 }
 
 /* ── styled filter selects ── */
+.custom-select {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+
+.custom-select__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.custom-select__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-select__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  transform-origin: top;
+  animation: selectMenuIn 0.12s ease-out;
+}
+
+.custom-select__option {
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.custom-select__option--active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.custom-select__option--selected {
+  font-weight: 700;
+}
+
+.custom-select__option--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.custom-select__button.month-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent-soft);
+  border: 1.5px solid var(--accent);
+  color: var(--accent-strong);
+  font-weight: 700;
+  font-size: 15px;
+  padding: 7px 36px 7px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  min-width: 140px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 6px 14px rgba(19, 18, 18, 0.06);
+}
+
+.custom-select__button.month-select::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  width: 10px;
+  height: 6px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23b9481d' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat center;
+  pointer-events: none;
+  transition: transform 0.12s ease;
+}
+
+.custom-select__button.month-select[aria-expanded="true"]::after {
+  transform: rotate(180deg);
+}
+
+@keyframes selectMenuIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 .filter-select-wrap {
   display: flex;
   align-items: center;
 }
 .filter-select-icon { display: none; }
-.filter-select-wrap select,
-.toolbar__filters select {
+.filter-select-wrap .custom-select__button,
+.toolbar__filters .custom-select__button {
+  position: relative;
   appearance: none;
   -webkit-appearance: none;
-  background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236e6a63' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
-  border: 1.5px solid var(--border);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
   color: var(--ink);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   font-family: var(--font-body);
   padding: 9px 34px 9px 14px;
   border-radius: 10px;
   cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s;
   min-width: 120px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 6px 14px rgba(19, 18, 18, 0.06);
 }
-.filter-select-wrap select:focus,
-.toolbar__filters select:focus {
+
+.filter-select-wrap .custom-select__button::after,
+.toolbar__filters .custom-select__button::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  width: 10px;
+  height: 6px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23d9642a' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat center;
+  pointer-events: none;
+  transition: transform 0.12s ease;
+}
+
+.filter-select-wrap .custom-select__button[aria-expanded="true"]::after,
+.toolbar__filters .custom-select__button[aria-expanded="true"]::after {
+  transform: rotate(180deg);
+}
+.filter-select-wrap .custom-select__button:focus,
+.toolbar__filters .custom-select__button:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.filter-select-wrap select:hover,
-.toolbar__filters select:hover { border-color: var(--accent); }
+.filter-select-wrap .custom-select__button:hover,
+.toolbar__filters .custom-select__button:hover { border-color: var(--accent); }
+
+@media (max-width: 600px) {
+  .toolbar__filters {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
+    overflow-x: hidden;
+  }
+
+  .filter-select-wrap .custom-select__button,
+  .toolbar__filters .custom-select__button {
+    padding: 3px 18px 3px 6px;
+    font-size: 10px;
+    line-height: 1.1;
+    border-radius: 6px;
+    min-width: 80px;
+    width: auto;
+    flex: 1 1 80px;
+    background-position: right 6px center;
+  }
+}
 
 /* ── FAB ── */
 .fab {
@@ -1460,7 +1657,8 @@ body {
   background: var(--accent-soft);
 }
 .sync-panel__action-btn--recommended > :first-child { color: var(--accent); }
-
+.sync-panel__action-btn--pull { }
+.sync-panel__action-btn--push { }
 
 .sync-panel__warning {
   font-size: 11px;

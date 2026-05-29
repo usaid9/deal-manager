@@ -35,19 +35,21 @@ export function recalculateDeals(deals: Deal[]): Deal[] {
     let remaining = toNum(deal.remainingAmount);
     let recovered = toNum(deal.recoveredAmount);
 
-    if (remaining === 0 && recovered === 0 && months > 0) {
-      remaining = calcRemaining(instalment, months, deal.instalRcvd ?? 0);
-      recovered = calcRecovered(total, remaining);
-    }
-
     if (deal.useManualBalance) {
+      // manualRemaining / manualRecovered are always kept in sync by receipt
+      // handlers, so they are the single authoritative source for manual deals.
       if (deal.manualRemaining != null) {
         remaining = Math.max(0, toNum(deal.manualRemaining));
-        recovered = Math.max(0, total - remaining);
       } else if (deal.manualRecovered != null) {
-        recovered = Math.max(0, toNum(deal.manualRecovered));
-        remaining = Math.max(0, total - recovered);
+        remaining = Math.max(0, total - toNum(deal.manualRecovered));
       }
+      // If neither field is set yet (truly new deal with no manual value),
+      // keep whatever remainingAmount was passed in.
+      recovered = Math.max(0, total - remaining);
+    } else if (months > 0) {
+      // Always recalculate from instalRcvd for non-manual deals
+      remaining = calcRemaining(instalment, months, deal.instalRcvd ?? 0);
+      recovered = calcRecovered(total, remaining);
     }
 
     return { ...deal, instalment, total, profitPct, recoveredAmount: recovered, remainingAmount: remaining, useManualBalance: deal.useManualBalance === true };
