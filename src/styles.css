@@ -121,10 +121,9 @@ body {
   font-size: 13px;
 }
 
-.deal-row__invested {
+.deal-row__recoverable {
   font-weight: 600;
   font-size: 15px;
-  min-width: 120px;
   text-align: right;
 }
 
@@ -631,7 +630,7 @@ body {
   flex-shrink: 0;
 }
 
-.deal-row__invested {
+.deal-row__recoverable {
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
@@ -706,7 +705,7 @@ body {
 
 
   .deal-row__name { max-width: 120px; }
-  .deal-row__invested { font-size: 12px; }
+  .deal-row__recoverable { font-size: 12px; }
 }
 
 /* deal summary (compact read view) */
@@ -783,6 +782,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 .month-select {
   appearance: none;
@@ -1460,8 +1460,7 @@ body {
   background: var(--accent-soft);
 }
 .sync-panel__action-btn--recommended > :first-child { color: var(--accent); }
-.sync-panel__action-btn--pull { }
-.sync-panel__action-btn--push { }
+
 
 .sync-panel__warning {
   font-size: 11px;

@@ -19,6 +19,25 @@ type Props = {
   onDelete?: (dealId: string) => void;
 };
 
+type ReceiptItem = {
+  key: string;
+  monthId: string;
+  label: string;
+  receiptId: string;
+  amount: number;
+  installments: number;
+  receivedAt: string;
+  note?: string;
+};
+
+type ReceiptGroup = {
+  monthId: string;
+  label: string;
+  total: number;
+  installments: number;
+  items: ReceiptItem[];
+};
+
 const emptyDeal = (): Deal => {
   const now = new Date().toISOString();
   return {
@@ -69,9 +88,21 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
     return { instalment, total, profitPct, remaining, recovered };
   }, [draft, customInstalment]);
 
+  const requiredMissing = useMemo(() => {
+    const missing: string[] = [];
+    const dealNoValue = typeof draft.dealNo === "string" ? draft.dealNo.trim() : String(draft.dealNo ?? "").trim();
+    if (!dealNoValue) missing.push("Deal No");
+    const dealDateValue = draft.dealDate ? draft.dealDate.slice(0, 10) : null;
+    if (!dealDateValue || !/^\d{4}-\d{2}-\d{2}$/.test(dealDateValue)) missing.push("Deal Date");
+    if (!draft.customer || !draft.customer.trim()) missing.push("Customer");
+    if (!Number.isFinite(draft.invested) || draft.invested <= 0) missing.push("Invested");
+    if (!Number.isFinite(draft.months) || draft.months <= 0) missing.push("Months");
+    return missing;
+  }, [draft.dealNo, draft.dealDate, draft.customer, draft.invested, draft.months]);
+
   // Receipt pills grouped by month
   const receiptMonths = useMemo(() => {
-    const grouped: { monthId: string; label: string; amount: number; installments: number }[] = [];
+    const grouped: { monthId: string; label: string; amount: number; installments: number; receivedDates: string[] }[] = [];
     const seen = new Set<string>();
     for (const rec of allRecords) {
       if (!seen.has(rec.monthId) && rec.receipts.length > 0) {
@@ -80,7 +111,8 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
           monthId: rec.monthId,
           label: new Date(rec.monthId + "-01").toLocaleString("en-US", { month: "short", year: "2-digit" }),
           amount: rec.receipts.reduce((s, r) => s + r.amount, 0),
-          installments: rec.receipts.reduce((s, r) => s + (r.installments ?? 0), 0)
+          installments: rec.receipts.reduce((s, r) => s + (r.installments ?? 0), 0),
+          receivedDates: rec.receipts.map((r) => new Date(r.receivedAt).toLocaleDateString("en-GB"))
         });
       }
     }
@@ -89,14 +121,15 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
         monthId: "current",
         label: "This month",
         amount: draft.receipts.reduce((s, r) => s + r.amount, 0),
-        installments: draft.receipts.reduce((s, r) => s + (r.installments ?? 0), 0)
+        installments: draft.receipts.reduce((s, r) => s + (r.installments ?? 0), 0),
+        receivedDates: draft.receipts.map((r) => new Date(r.receivedAt).toLocaleDateString("en-GB"))
       });
     }
     return grouped.sort((a, b) => b.monthId.localeCompare(a.monthId));
   }, [allRecords, draft.receipts]);
 
   const receiptItems = useMemo(() => {
-    const items: { key: string; monthId: string; label: string; receiptId: string; amount: number; installments: number; receivedAt: string; note?: string }[] = [];
+    const items: ReceiptItem[] = [];
     if (allRecords.length > 0) {
       for (const rec of allRecords) {
         const label = new Date(rec.monthId + "-01").toLocaleString("en-US", { month: "short", year: "2-digit" });
@@ -130,6 +163,29 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
     return items.sort((a, b) => b.monthId.localeCompare(a.monthId) || b.receivedAt.localeCompare(a.receivedAt));
   }, [allRecords, draft.receipts]);
 
+  const receiptGroups = useMemo(() => {
+    const grouped = new Map<string, ReceiptGroup>();
+    for (const item of receiptItems) {
+      const existing = grouped.get(item.monthId);
+      if (existing) {
+        existing.items.push(item);
+        existing.total += item.amount;
+        existing.installments += item.installments;
+      } else {
+        grouped.set(item.monthId, {
+          monthId: item.monthId,
+          label: item.label,
+          total: item.amount,
+          installments: item.installments,
+          items: [item]
+        });
+      }
+    }
+    return Array.from(grouped.values()).sort((a, b) => b.monthId.localeCompare(a.monthId));
+  }, [receiptItems]);
+
+  const receiptsTotal = receiptItems.reduce((sum, item) => sum + item.amount, 0);
+
   const deletableReceiptItems = receiptItems.filter((item) => item.monthId !== "current");
 
   if (!open) return null;
@@ -138,6 +194,7 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
     setDraft((c) => ({ ...c, [field]: value, updatedAt: new Date().toISOString() }));
 
   const handleSave = () => {
+    if (requiredMissing.length > 0) return;
     onSave({ ...draft, instalment: computed.instalment, total: computed.total, profitPct: computed.profitPct, recoveredAmount: computed.recovered, remainingAmount: computed.remaining, updatedAt: new Date().toISOString() });
     setEditing(false);
   };
@@ -158,7 +215,7 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
           <span className="deal-card__customer">{draft.customer || "Untitled"}</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span className="deal-card__deal-no">#{draft.dealNo}</span>
-            <span className="deal-card__date">{new Date(draft.dealDate).toLocaleDateString('en-GB')}</span>
+            <span className="deal-card__date">{draft.dealDate ? new Date(draft.dealDate + "T00:00:00").toLocaleDateString('en-GB') : ""}</span>
             <span className={`pill ${isClosed ? "pill--closed" : "pill--active"}`}>{isClosed ? "closed" : "active"}</span>
             <span className={`pill ${receivedThisMonth ? "pill--rcvd" : "pill--pending"}`}>{receivedThisMonth ? "received" : "pending"}</span>
           </div>
@@ -220,13 +277,39 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
             </div>
 
             <div style={{ display: "grid", gap: 10, marginTop: "auto" }}>
+              {receiptItems.length > 0 && (
+                <section>
+                  <div className="drawer__receipts-header">
+                    <span className="deal-card__label">Receipts</span>
+                    <span className="drawer__receipts-total">{fmt(receiptsTotal)}</span>
+                  </div>
+                  {receiptGroups.map((group) => (
+                    <div key={group.monthId} className="receipt-group">
+                      <div className="receipt-group__header">
+                        <span>{group.label}</span>
+                        <span>{group.installments} inst · {fmt(group.total)}</span>
+                      </div>
+                      <ul className="receipt-list">
+                        {group.items.map((item) => (
+                          <li key={item.key}>
+                            <p className="receipt-amount">
+                              {fmt(item.amount)} · {new Date(item.receivedAt).toLocaleDateString("en-GB")} · {item.installments} inst
+                            </p>
+                            {item.note && <p className="receipt-note">{item.note}</p>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </section>
+              )}
               {receiptMonths.length > 0 && (
                 <section className="receipt-pills-section">
                   <p className="receipt-pills-label">receipts</p>
                   <div className="receipt-pills">
                     {receiptMonths.map((m) => (
                       <span key={m.monthId} className="receipt-pill">
-                        {m.label} · {m.installments} inst · {fmt(m.amount)}
+                        {m.label} · {m.receivedDates.join(", ")} · {m.installments} inst · {fmt(m.amount)}
                       </span>
                     ))}
                   </div>
@@ -309,13 +392,13 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
               </button>
             )}
             <div className="form-grid">
-              <label>Deal No<input value={draft.dealNo} onChange={(e) => set("dealNo", e.target.value)} /></label>
-              <label>Deal Date<input type="date" value={draft.dealDate ? draft.dealDate.slice(0, 10) : ""} onChange={(e) => set("dealDate", e.target.value)} /></label>
-              <label>Customer<input value={draft.customer} onChange={(e) => set("customer", e.target.value)} /></label>
+              <label>Deal No<input required value={draft.dealNo} onChange={(e) => set("dealNo", e.target.value)} /></label>
+              <label>Deal Date<input required type="date" value={draft.dealDate ? draft.dealDate.slice(0, 10) : ""} onChange={(e) => set("dealDate", e.target.value)} /></label>
+              <label>Customer<input required value={draft.customer} onChange={(e) => set("customer", e.target.value)} /></label>
               <label>Mobile No<input value={draft.mobileNo} onChange={(e) => set("mobileNo", e.target.value)} /></label>
               <label>Referral<input value={draft.referral} onChange={(e) => set("referral", e.target.value)} /></label>
-              <label>Invested<input type="number" value={draft.invested || ""} onChange={(e) => { set("invested", Number(e.target.value)); if (!customInstalment) set("instalment", 0); }} /></label>
-              <label>Months<input type="number" value={draft.months || ""} onChange={(e) => { set("months", Number(e.target.value)); if (!customInstalment) set("instalment", 0); }} /></label>
+              <label>Invested<input required min={1} type="number" value={draft.invested || ""} onChange={(e) => { set("invested", Number(e.target.value)); if (!customInstalment) set("instalment", 0); }} /></label>
+              <label>Months<input required min={1} type="number" value={draft.months || ""} onChange={(e) => { set("months", Number(e.target.value)); if (!customInstalment) set("instalment", 0); }} /></label>
               <label style={{ gridColumn: "1 / -1" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                   <span>Instalment</span>
@@ -335,7 +418,7 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
 
             {(draft.invested > 0 || draft.months > 0) && (
               <div className="drawer__formula">
-                {[["Total", fmt(computed.total)], ["Profit %", `${computed.profitPct.toFixed(2)}%`],
+                {[["Recoverable", fmt(computed.total)], ["Profit %", `${computed.profitPct.toFixed(2)}%`],
                   ["Recovered", fmt(computed.recovered)], ["Remaining", fmt(computed.remaining)]].map(([l, v]) => (
                   <div key={l}><p className="deal-card__label">{l}</p><p className="drawer__value">{v}</p></div>
                 ))}
@@ -360,8 +443,13 @@ export default function DealDrawer({ mode, open, variant = "panel", deal, onClos
 
       {showForm && (
         <div className="drawer__footer">
+          {requiredMissing.length > 0 && (
+            <span className="deal-card__label" style={{ color: "#991b1b", marginRight: "auto" }}>
+              Required: {requiredMissing.join(", ")}.
+            </span>
+          )}
           <button className="btn btn--ghost" onClick={() => mode === "new" ? onClose() : setEditing(false)}>Cancel</button>
-          <button className="btn btn--primary" onClick={handleSave}>Save deal</button>
+          <button className="btn btn--primary" onClick={handleSave} disabled={requiredMissing.length > 0}>Save deal</button>
         </div>
       )}
     </aside>

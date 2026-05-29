@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { recalculateDeals, calcInstalment } from "../lib/compute";
+import CustomSelect from "./CustomSelect";
 import {
   createNextMonth, getBaseDeals, getMonthRecords, getMonths, saveBaseDeal,
 } from "../lib/store";
@@ -52,7 +53,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
   const [editVal, setEditVal] = useState("");
   const [filterText, setFilterText] = useState("");
   const [filterReferral, setFilterReferral] = useState("all");
-  const [filterStatus, setFilterStatus] = useState<"all" | "received" | "pending">("all");
+  const [filterStatus, setFilterStatus] = useState<"all" | "received" | "pending" | "completed">("all");
   const [sortBy, setSortBy] = useState<"dealNo" | "customer" | "amount">("dealNo");
   const inputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -168,6 +169,8 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
     const filtered = visibleDeals.filter((d) => {
       if (filterReferral !== "all" && normalizeReferral(d.referral) !== filterReferral) return false;
       const receivedThisMonth = isReceivedThisMonth(d.id);
+      const completed = d.remainingAmount <= 0;
+      if (filterStatus === "completed" && !completed) return false;
       if (filterStatus === "received" && !receivedThisMonth) return false;
       if (filterStatus === "pending" && receivedThisMonth) return false;
       if (!low) return true;
@@ -305,9 +308,13 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
       <div className="excel-ribbon">
         <div className="excel-ribbon__group">
           <label className="excel-ribbon__label">Month</label>
-          <select className="excel-ribbon__sel" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}>
-            {sortedMonths.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
+          <CustomSelect
+            value={selectedMonth}
+            onChange={(value) => setSelectedMonth(value)}
+            options={sortedMonths.map((m) => ({ value: m.id, label: m.label }))}
+            buttonClassName="excel-ribbon__sel"
+            ariaLabel="Month"
+          />
         </div>
         <div className="excel-ribbon__group">
           <label className="excel-ribbon__label">Search</label>
@@ -315,25 +322,42 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
         </div>
         <div className="excel-ribbon__group">
           <label className="excel-ribbon__label">Referral</label>
-          <select className="excel-ribbon__sel" value={filterReferral} onChange={(e) => setFilterReferral(e.target.value)}>
-            {referralOptions.map((o) => <option key={o} value={o}>{o === "all" ? "all" : o}</option>)}
-          </select>
+          <CustomSelect
+            value={filterReferral}
+            onChange={(value) => setFilterReferral(value)}
+            options={referralOptions.map((o) => ({ value: o, label: o === "all" ? "all" : o }))}
+            buttonClassName="excel-ribbon__sel"
+            ariaLabel="Referral"
+          />
         </div>
         <div className="excel-ribbon__group">
           <label className="excel-ribbon__label">Status</label>
-          <select className="excel-ribbon__sel" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as typeof filterStatus)}>
-            <option value="all">All</option>
-            <option value="received">Received</option>
-            <option value="pending">Pending</option>
-          </select>
+          <CustomSelect
+            value={filterStatus}
+            onChange={(value) => setFilterStatus(value as typeof filterStatus)}
+            options={[
+              { value: "all", label: "All" },
+              { value: "completed", label: "Completed" },
+              { value: "received", label: "Received" },
+              { value: "pending", label: "Pending" }
+            ]}
+            buttonClassName="excel-ribbon__sel"
+            ariaLabel="Status"
+          />
         </div>
         <div className="excel-ribbon__group">
           <label className="excel-ribbon__label">Sort</label>
-          <select className="excel-ribbon__sel" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
-            <option value="dealNo">Deal number</option>
-            <option value="customer">Name</option>
-            <option value="amount">Amount</option>
-          </select>
+          <CustomSelect
+            value={sortBy}
+            onChange={(value) => setSortBy(value as typeof sortBy)}
+            options={[
+              { value: "dealNo", label: "Deal number" },
+              { value: "customer", label: "Name" },
+              { value: "amount", label: "Amount" }
+            ]}
+            buttonClassName="excel-ribbon__sel"
+            ariaLabel="Sort"
+          />
         </div>
         <div className="excel-ribbon__info">
           {filteredDeals.length} rows
