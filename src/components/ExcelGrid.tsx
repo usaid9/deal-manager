@@ -59,7 +59,6 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const totalsScrollRef = useRef<HTMLDivElement>(null);
 
   // Load all data
   useEffect(() => {
@@ -390,7 +389,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
       </div>
 
       {/* Grid */}
-      <div className="excel-scroll" ref={scrollRef} onScroll={(e) => { if (totalsScrollRef.current) totalsScrollRef.current.scrollLeft = (e.target as HTMLDivElement).scrollLeft; }}>
+      <div className="excel-scroll" ref={scrollRef}>
         <div className="excel-scale-wrapper" style={{ zoom: scale }}>
         <div className="excel-table">
           {/* Column headers */}
@@ -456,14 +455,8 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
             </div>
           ))}
 
-        </div>
-        </div>{/* /excel-scale-wrapper */}
-      </div>
-
-      {/* Totals row — outside scale wrapper so it stays pinned */}
-      {filteredDeals.length > 0 && (
-        <div className="excel-totals-bar">
-          <div className="excel-scroll excel-scroll--totals" ref={totalsScrollRef} onScroll={(e) => { if (scrollRef.current) scrollRef.current.scrollLeft = (e.target as HTMLDivElement).scrollLeft; }}>
+        {/* Totals row — sticky bottom inside scroll so it aligns with columns */}
+          {filteredDeals.length > 0 && (
             <div className="excel-row excel-row--totals">
               <div className="excel-row-num excel-row-num--sigma">Σ</div>
               {COLS.map((col) => {
@@ -484,9 +477,11 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
                 );
               })}
             </div>
-          </div>
+          )}
+
         </div>
-      )}
+        </div>{/* /excel-scale-wrapper */}
+      </div>
 
       <div className="excel-statusbar">
         <span>Ready</span>

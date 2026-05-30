@@ -65,8 +65,17 @@ body {
   height: 100vh;
 }
 
+/* Prevent body scrollbar causing layout shift in excel mode */
+body:has(#root.root--excel) {
+  overflow-x: hidden;
+}
+
+
 #root.root--excel {
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  width: 100%;
 }
 
 .app {
@@ -1314,40 +1323,31 @@ body {
 
 /* Ribbon */
 .excel-ribbon {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
   padding: 8px 12px;
   background: #217346;
   border-bottom: 1px solid #1a5c37;
-}
-
-@media (max-width: 700px) {
-  .excel-ribbon {
-    grid-template-columns: 1fr 1fr;
-  }
-  /* Search bar spans full width on mobile */
-  .excel-ribbon__group:nth-child(2) {
-    grid-column: 1 / -1;
-  }
-  .excel-ribbon__group {
-    min-width: 0;
-  }
-  .excel-ribbon__input {
-    width: 100%;
-    min-width: 0;
-    flex: 1;
-    box-sizing: border-box;
-  }
-  .excel-ribbon__sel {
-    min-width: 0;
-    flex: 1;
-  }
 }
 .excel-ribbon__group {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 120px;
+  min-width: 0;
+}
+/* Search stretches more */
+.excel-ribbon__group:nth-child(2) {
+  flex: 2 1 160px;
+}
+/* Scale and info don't need to grow */
+.excel-ribbon__group--scale {
+  flex: 0 0 auto;
+}
+.excel-ribbon__info {
+  flex: 0 0 auto;
 }
 .excel-ribbon__label {
   color: rgba(255,255,255,0.75);
@@ -1357,6 +1357,24 @@ body {
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
+.excel-ribbon__group .custom-select {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  display: flex;
+}
+.excel-ribbon__group .custom-select__button::after {
+  content: "";
+  display: block;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid rgba(255,255,255,0.7);
+  flex-shrink: 0;
+}
+
+.excel-ribbon__group .custom-select__button,
 .excel-ribbon__sel,
 .excel-ribbon__input {
   height: 28px;
@@ -1368,16 +1386,17 @@ body {
   font-size: 12px;
   font-family: inherit;
   outline: none;
-  min-width: 90px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
 }
 .excel-ribbon__sel option { color: #000; background: #fff; }
 .excel-ribbon__input::placeholder { color: rgba(255,255,255,0.5); }
 .excel-ribbon__info {
-  grid-column: 1 / -1;
   color: rgba(255,255,255,0.65);
   font-size: 12px;
   font-weight: 500;
-  text-align: right;
+  margin-left: auto;
 }
 
 /* Name bar */
@@ -1498,6 +1517,9 @@ body {
 .excel-row--alt { background: #f9fafb; }
 .excel-row--selected { background: #e8f4e8 !important; }
 .excel-row--totals {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
   background: #fff9e6;
   border-top: 2px solid #d4af37;
   width: max-content;
@@ -1852,6 +1874,8 @@ body {
 /* Full-width excel mode — break out of 1100px container */
 .app--excel {
   max-width: 100%;
+  width: 100%;
+  margin: 0;
   padding: 0;
   height: 120vh;
   display: flex;
@@ -1860,7 +1884,7 @@ body {
 .app--excel .main {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   padding: 15px;
   display: flex;
   flex-direction: column;
