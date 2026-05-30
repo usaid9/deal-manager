@@ -391,7 +391,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
 
       {/* Grid */}
       <div className="excel-scroll" ref={scrollRef} onScroll={(e) => { if (totalsScrollRef.current) totalsScrollRef.current.scrollLeft = (e.target as HTMLDivElement).scrollLeft; }}>
-        <div className="excel-scale-wrapper" style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: `${100 / scale}%` }}>
+        <div className="excel-scale-wrapper" style={{ zoom: scale }}>
         <div className="excel-table">
           {/* Column headers */}
           <div className="excel-row excel-row--header">
@@ -478,7 +478,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
                   val = sum ? currency(sum) : "";
                 }
                 return (
-                  <div key={col.key} className="excel-cell excel-cell--total" style={{ width: col.width * scale, minWidth: col.width * scale }}>
+                  <div key={col.key} className="excel-cell excel-cell--total" style={{ width: col.width, minWidth: col.width }}>
                     <span className="excel-cell__val">{val}</span>
                   </div>
                 );
