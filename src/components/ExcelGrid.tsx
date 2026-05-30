@@ -12,21 +12,21 @@ const currency = (v: number) =>
 const normalizeReferral = (value: string) => value.trim().toLowerCase();
 
 // flex weights — proportional widths; columns scale to fill viewport
-const COLS: { key: string; label: string; flex: number; editable?: boolean; readOnly?: boolean; type?: string }[] = [
-  { key: "dealNo",          label: "Deal No",   flex: 72,  editable: true, type: "text" },
-  { key: "dealDate",        label: "Deal Date", flex: 100, editable: true, type: "date" },
-  { key: "invested",        label: "Invested",  flex: 88,  editable: true, type: "number" },
-  { key: "months",          label: "Months",    flex: 58,  editable: true, type: "number" },
-  { key: "total",           label: "Recoverable",     flex: 88,  readOnly: true },
-  { key: "customer",        label: "Customer",  flex: 120, editable: true, type: "text" },
-  { key: "mobileNo",        label: "Mobile No", flex: 105, editable: true, type: "text" },
-  { key: "referral",        label: "Referral",  flex: 90,  editable: true, type: "text" },
-  { key: "instalment",      label: "Instalment",flex: 88,  readOnly: true },
-  { key: "received",        label: "Rcvd (PKR)",flex: 95,  readOnly: true },
-  { key: "instalRcvd",      label: "Rcvd (#)",  flex: 68,  readOnly: true },
-  { key: "profitPct",       label: "Profit %",  flex: 68,  readOnly: true },
-  { key: "recoveredAmount", label: "Recovered", flex: 88,  readOnly: true },
-  { key: "remainingAmount", label: "Remaining", flex: 88,  readOnly: true },
+const COLS: { key: string; label: string; width: number; editable?: boolean; readOnly?: boolean; type?: string }[] = [
+  { key: "dealNo",          label: "Deal No",    width: 80,  editable: true, type: "text" },
+  { key: "dealDate",        label: "Deal Date",  width: 108, editable: true, type: "date" },
+  { key: "invested",        label: "Invested",   width: 96,  editable: true, type: "number" },
+  { key: "months",          label: "Months",     width: 68,  editable: true, type: "number" },
+  { key: "total",           label: "Recoverable",width: 96,  readOnly: true },
+  { key: "customer",        label: "Customer",   width: 130, editable: true, type: "text" },
+  { key: "mobileNo",        label: "Mobile No",  width: 112, editable: true, type: "text" },
+  { key: "referral",        label: "Referral",   width: 96,  editable: true, type: "text" },
+  { key: "instalment",      label: "Instalment", width: 96,  readOnly: true },
+  { key: "received",        label: "Rcvd (PKR)", width: 100, readOnly: true },
+  { key: "instalRcvd",      label: "Rcvd (#)",   width: 74,  readOnly: true },
+  { key: "profitPct",       label: "Profit %",   width: 74,  readOnly: true },
+  { key: "recoveredAmount", label: "Recovered",  width: 96,  readOnly: true },
+  { key: "remainingAmount", label: "Remaining",  width: 96,  readOnly: true },
 ];
 
 type CellPos = { row: number; col: number };
@@ -55,8 +55,11 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
   const [filterReferral, setFilterReferral] = useState("all");
   const [filterStatus, setFilterStatus] = useState<"all" | "received" | "pending" | "completed">("all");
   const [sortBy, setSortBy] = useState<"dealNo" | "customer" | "amount">("dealNo");
+  const [scale, setScale] = useState<number>(1);
   const inputRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const totalsScrollRef = useRef<HTMLDivElement>(null);
 
   // Load all data
   useEffect(() => {
@@ -358,6 +361,22 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
             ariaLabel="Sort"
           />
         </div>
+        <div className="excel-ribbon__group excel-ribbon__group--scale">
+          <label className="excel-ribbon__label">Scale</label>
+          <div className="excel-scale-ctrl">
+            <button
+              className="excel-scale-btn"
+              onClick={() => setScale(s => Math.max(0.5, parseFloat((s - 0.1).toFixed(1))))}
+              aria-label="Zoom out"
+            >−</button>
+            <span className="excel-scale-val">{Math.round(scale * 100)}%</span>
+            <button
+              className="excel-scale-btn"
+              onClick={() => setScale(s => Math.min(2, parseFloat((s + 0.1).toFixed(1))))}
+              aria-label="Zoom in"
+            >+</button>
+          </div>
+        </div>
         <div className="excel-ribbon__info">
           {filteredDeals.length} rows
         </div>
@@ -371,7 +390,8 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
       </div>
 
       {/* Grid */}
-      <div className="excel-scroll">
+      <div className="excel-scroll" ref={scrollRef} onScroll={(e) => { if (totalsScrollRef.current) totalsScrollRef.current.scrollLeft = (e.target as HTMLDivElement).scrollLeft; }}>
+        <div className="excel-scale-wrapper" style={{ transform: `scale(${scale})`, transformOrigin: "top left", width: `${100 / scale}%` }}>
         <div className="excel-table">
           {/* Column headers */}
           <div className="excel-row excel-row--header">
@@ -380,7 +400,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
               <div
                 key={col.key}
                 className={`excel-col-header${selected?.col === ci ? " excel-col-header--sel" : ""}`}
-                style={{ flex: col.flex, minWidth: 60 }}
+                style={{ width: col.width, minWidth: col.width }}
               >
                 <span className="excel-col-letter">{colLetter(ci + 1)}</span>
                 <span className="excel-col-name">{col.label}</span>
@@ -412,7 +432,7 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
                   <div
                     key={col.key}
                     className={`excel-cell${isSel ? " excel-cell--sel" : ""}${col.editable ? " excel-cell--editable" : " excel-cell--readonly"}${isEmpty ? " excel-cell--empty" : ""}${isReceived && val ? " excel-cell--received" : ""}`}
-                    style={{ flex: col.flex, minWidth: 60 }}
+                    style={{ width: col.width, minWidth: col.width }}
                     onClick={() => { setSelected({ row: rowIdx, col: colIdx }); }}
                     onDoubleClick={() => startEdit(rowIdx, colIdx, deal)}
                   >
@@ -436,10 +456,16 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
             </div>
           ))}
 
-          {/* Totals row */}
-          {filteredDeals.length > 0 && (
+        </div>
+        </div>{/* /excel-scale-wrapper */}
+      </div>
+
+      {/* Totals row — outside scale wrapper so it stays pinned */}
+      {filteredDeals.length > 0 && (
+        <div className="excel-totals-bar">
+          <div className="excel-scroll excel-scroll--totals" ref={totalsScrollRef} onScroll={(e) => { if (scrollRef.current) scrollRef.current.scrollLeft = (e.target as HTMLDivElement).scrollLeft; }}>
             <div className="excel-row excel-row--totals">
-              <div className="excel-row-num" style={{ fontWeight: 700 }}>Σ</div>
+              <div className="excel-row-num excel-row-num--sigma">Σ</div>
               {COLS.map((col) => {
                 const numCols = ["invested", "total", "instalment", "recoveredAmount", "remainingAmount", "instalRcvd"];
                 const rcvdCols = ["received"];
@@ -452,15 +478,15 @@ export default function ExcelGrid({ activeMonthId, months }: ExcelGridProps) {
                   val = sum ? currency(sum) : "";
                 }
                 return (
-                  <div key={col.key} className="excel-cell excel-cell--total" style={{ flex: col.flex, minWidth: 60 }}>
+                  <div key={col.key} className="excel-cell excel-cell--total" style={{ width: col.width * scale, minWidth: col.width * scale }}>
                     <span className="excel-cell__val">{val}</span>
                   </div>
                 );
               })}
             </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="excel-statusbar">
         <span>Ready</span>

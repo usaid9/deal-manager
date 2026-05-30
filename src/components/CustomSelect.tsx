@@ -54,6 +54,7 @@ export default function CustomSelect({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [flipRight, setFlipRight] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const typeBufferRef = useRef("");
@@ -80,6 +81,11 @@ export default function CustomSelect({
 
   useEffect(() => {
     if (!open) return;
+    // Decide whether to flip menu to right-align
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setFlipRight(window.innerWidth - rect.right < 160);
+    }
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (!rootRef.current?.contains(target)) setOpen(false);
@@ -186,7 +192,12 @@ export default function CustomSelect({
         <span className="custom-select__value">{label}</span>
       </button>
       {open && (
-        <div className={menuClasses} role="listbox" id={listId}>
+        <div
+          className={menuClasses}
+          role="listbox"
+          id={listId}
+          style={flipRight ? { left: "auto", right: 0 } : undefined}
+        >
           {options.map((opt, idx) => (
             <div
               key={opt.value}
