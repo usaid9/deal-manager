@@ -120,6 +120,12 @@ export default function App() {
   const syncStatus: SyncStatus = "idle";
   const syncPending = 0;
   const [viewMode, setViewMode] = useState<"cards" | "excel">("cards");
+
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (root) root.classList.toggle("root--excel", viewMode === "excel");
+    return () => { if (root) root.classList.remove("root--excel"); };
+  }, [viewMode]);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
 
   const { detailDealId, detailMonthId } = useMemo(() => {
