@@ -17,8 +17,38 @@
   --font-body: "Space Grotesk", "Segoe UI", sans-serif;
 }
 
+/* Force light mode on every browser/OS — override dark mode entirely */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: light;
+    --bg: #f6f1ec;
+    --surface: #ffffff;
+    --surface-muted: #fef8f2;
+    --ink: #1a1a19;
+    --muted: #6e6a63;
+    --accent: #d9642a;
+    --accent-strong: #b9481d;
+    --accent-soft: rgba(217, 100, 42, 0.12);
+    --border: #e8dfd6;
+    --shadow: 0 20px 60px rgba(19, 18, 18, 0.08);
+  }
+  html, body {
+    background: #f6f1ec !important;
+    color: #1a1a19 !important;
+  }
+  input, select, textarea, button {
+    background-color: #ffffff !important;
+    color: #1a1a19 !important;
+    border-color: #e8dfd6 !important;
+  }
+}
+
 * {
   box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
 }
 
 body {
@@ -26,12 +56,16 @@ body {
   min-height: 100vh;
   font-family: var(--font-body);
   color: var(--ink);
+  color-scheme: light;
   background: radial-gradient(circle at top, #fff7ef 0%, var(--bg) 55%),
     linear-gradient(140deg, #f5efe9 0%, #eef4ff 65%);
 }
 
 #root {
   height: 100vh;
+}
+
+#root.root--excel {
   overflow: hidden;
 }
 
@@ -1933,6 +1967,7 @@ body {
 .excel-totals-bar {
   border-top: 2px solid #d4af37;
   background: #fff9e6;
+  overflow: hidden;
 }
 .excel-scroll--totals {
   overflow-x: auto;
